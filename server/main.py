@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import chunker, db
@@ -33,6 +34,14 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="KBChat", docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
 app.include_router(router)
+
+
+# index.html 禁止缓存（零构建前端，HTML/JS 版本必须同步），静态资源仍走 ETag 协商缓存
+@app.get("/", include_in_schema=False)
+def index():
+    return FileResponse(WEB_DIR / "index.html", headers={
+        "Cache-Control": "no-cache",
+    })
 
 
 # 静态托管 web/（html=True 使 GET / 返回 index.html）；必须在 API 路由之后挂载

@@ -113,15 +113,16 @@ function updateSendState() {
   const folderBtn = $('btn-folder-attach');
   ta.placeholder = placeholderText();
   attachBtn.disabled = state.convMode !== 'chat' || state.sending;
-  folderBtn.disabled = attachBtn.disabled;
   const attachTitle = state.convMode === 'kb'
     ? '知识库模式不使用附件'
     : '添加附件（可多选，最多 500 个）';
-  const folderTitle = state.convMode === 'kb'
-    ? '知识库模式不使用附件'
-    : '添加文件夹（递归读取，最多 500 个）';
   attachBtn.title = attachTitle;
-  folderBtn.title = folderTitle;
+  if (folderBtn) {
+    folderBtn.disabled = attachBtn.disabled;
+    folderBtn.title = state.convMode === 'kb'
+      ? '知识库模式不使用附件'
+      : '添加文件夹（递归读取，最多 500 个）';
+  }
 
   const has = !!(ta.value.trim() || state.attachments.length);
   const clearBtn = $('btn-clear-draft');
@@ -314,7 +315,7 @@ export function initInput() {
   // 回形针图标：直接用路径，避免图标库缺项
   $('btn-attach').innerHTML =
     '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M11.5 4.5v6a3.5 3.5 0 1 1-7 0V5a2.5 2.5 0 0 1 5 0v5.5a1.5 1.5 0 0 1-3 0V5.5a.5.5 0 0 1 1 0v5a.5.5 0 0 0 1 0V5a1.5 1.5 0 0 0-3 0v5.5a2.5 2.5 0 0 0 5 0V4.5a2.5 2.5 0 0 0-5 0V10"/></svg>';
-  $('btn-folder-attach').innerHTML = icon('folderPlus', 15);
+  if ($('btn-folder-attach')) $('btn-folder-attach').innerHTML = icon('folderPlus', 15);
   btn.innerHTML = icon('arrowUp', 16);
 
   ta.addEventListener('input', () => { autoResize(); updateSendState(); });
@@ -348,18 +349,18 @@ export function initInput() {
     }
     $('chat-attach-input').click();
   });
-  $('btn-folder-attach').addEventListener('click', () => {
+  $('btn-folder-attach')?.addEventListener('click', () => {
     if (state.convMode !== 'chat') {
       toast('知识库模式不使用附件，请切换到聊天模式', 'error');
       return;
     }
-    $('chat-folder-input').click();
+    $('chat-folder-input')?.click();
   });
   $('chat-attach-input').addEventListener('change', async (e) => {
     await addAttachmentFiles(e.target.files);
     e.target.value = '';
   });
-  $('chat-folder-input').addEventListener('change', async (e) => {
+  $('chat-folder-input')?.addEventListener('change', async (e) => {
     await addAttachmentFiles(e.target.files);
     e.target.value = '';
   });
