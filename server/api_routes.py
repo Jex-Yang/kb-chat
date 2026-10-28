@@ -16,10 +16,10 @@ from . import chunker, config, db, llm, parsers, tokens
 router = APIRouter(prefix="/api")
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
-MAX_ATTACHMENTS = 50
+MAX_ATTACHMENTS = 500
 # 聊天模式单个附件注入上限（字符）；token 由 DeepSeek 分词器精确计算
 CHAT_ATTACHMENT_MAX_CHARS = 150_000
-# 单次请求全部附件注入上限（字符），避免 50 个大文件把请求撑爆
+# 单次请求全部附件注入上限（字符），避免大量大文件把请求撑爆
 CHAT_ATTACHMENT_TOTAL_CHARS = 600_000
 KB_SYSTEM_TEMPLATE = "你是企业知识库助手。仅依据以下资料回答，资料不足时明确说明。\n【参考资料】\n{refs}"
 KB_SYSTEM_EMPTY = "你是企业知识库助手。当前知识库中未检索到相关资料，请明确告知用户未找到依据，并基于常识谨慎回答。"

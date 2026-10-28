@@ -143,7 +143,8 @@
         <div class="composer" id="composer">
           <div id="attachment-strip" class="attachment-strip" hidden></div>
           <div class="composer-row">
-            <button id="btn-attach" class="composer-icon" title="添加附件（可多选，最多 50 个）" aria-label="添加附件"></button>
+            <button id="btn-attach" class="composer-icon" title="添加附件（可多选，最多 500 个）" aria-label="添加附件"></button>
+            <button id="btn-folder-attach" class="composer-icon" title="添加文件夹（递归读取，最多 500 个）" aria-label="添加文件夹"></button>
             <textarea id="chat-input" rows="1" placeholder="给 DeepSeek 发送消息（也可以只发附件）" aria-label="消息输入框"></textarea>
             <button id="btn-clear-draft" class="composer-cancel" hidden>取消</button>
             <button id="btn-send" class="send-btn" disabled aria-label="发送"></button>
@@ -391,6 +392,7 @@
   <input type="file" id="file-upload-input" multiple hidden accept=".txt,.md,.csv,.pdf,.docx,.xlsx">
   <input type="file" id="folder-upload-input" webkitdirectory multiple hidden>
   <input type="file" id="chat-attach-input" multiple hidden accept=".txt,.md,.csv,.pdf,.docx,.xlsx,image/*">
+  <input type="file" id="chat-folder-input" webkitdirectory multiple hidden>
   <input type="file" id="edit-attach-input" multiple hidden accept=".txt,.md,.csv,.pdf,.docx,.xlsx,image/*">
   <input type="file" id="file-import-input" accept=".json,application/json" hidden>
 

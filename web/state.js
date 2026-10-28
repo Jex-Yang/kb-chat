@@ -41,7 +41,7 @@ export const state = {
   ready: false,
 };
 
-export const MAX_ATTACHMENTS = 50;
+export const MAX_ATTACHMENTS = 500;
 
 /** 深度档位 ↔ 文案 */
 export const DEPTH_LABELS = { none: '关', low: '标准', high: '深度', max: '极深' };

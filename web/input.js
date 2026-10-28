@@ -1,11 +1,11 @@
 /**
- * input.js — 底部输入框：附件草稿横向卡片（最多 50 个）、精确 token 合计、
- *            聊天 / 知识库模式、Enter 发送、拖拽 / 粘贴附件
+ * input.js — 底部输入框：附件草稿横向卡片（最多 500 个）、精确 token 合计、
+ *            聊天 / 知识库模式、Enter 发送、拖拽 / 粘贴 / 文件夹附件
  */
 import { state, MAX_ATTACHMENTS } from './state.js';
 import { icon } from './icons.js';
 import {
-  fmtInt, toast, confirmDialog, extOf, isImageFile, uid,
+  fmtInt, toast, confirmDialog, extOf, isImageFile, TEXT_EXTS, uid,
 } from './util.js';
 import { attachmentRow } from './attach-view.js';
 import { prepareAttachment, isDuplicateAttachment } from './attach-add.js';
@@ -13,6 +13,12 @@ import { openAttachmentPreview } from './attach-preview.js';
 import { sendMessage, stopGenerating } from './chat.js';
 
 const MAX_HEIGHT = 132;
+
+function isSupportedFile(file) {
+  if (!file || !file.name) return false;
+  if (file.name === '.DS_Store' || file.name.startsWith('._')) return false;
+  return isImageFile(file) || TEXT_EXTS.includes(extOf(file.name));
+}
 
 let overflow = false;
 
@@ -104,11 +110,18 @@ function updateSendState() {
   const ta = $('chat-input');
   const btn = $('btn-send');
   const attachBtn = $('btn-attach');
+  const folderBtn = $('btn-folder-attach');
   ta.placeholder = placeholderText();
   attachBtn.disabled = state.convMode !== 'chat' || state.sending;
-  attachBtn.title = state.convMode === 'kb'
+  folderBtn.disabled = attachBtn.disabled;
+  const attachTitle = state.convMode === 'kb'
     ? '知识库模式不使用附件'
-    : '添加附件（最多 50 个，支持文档与图片）';
+    : '添加附件（可多选，最多 500 个）';
+  const folderTitle = state.convMode === 'kb'
+    ? '知识库模式不使用附件'
+    : '添加文件夹（递归读取，最多 500 个）';
+  attachBtn.title = attachTitle;
+  folderBtn.title = folderTitle;
 
   const has = !!(ta.value.trim() || state.attachments.length);
   const clearBtn = $('btn-clear-draft');
@@ -127,13 +140,23 @@ async function addAttachmentFiles(fileList) {
     toast('知识库模式不使用附件，请切换到聊天模式', 'error');
     return;
   }
-  const files = Array.from(fileList || []);
-  for (const file of files) {
-    if (state.attachments.length >= MAX_ATTACHMENTS) {
-      toast(`附件最多 ${MAX_ATTACHMENTS} 个`, 'error');
-      break;
-    }
-    if (!file || !file.name || file.name === '.DS_Store' || file.name.startsWith('._')) continue;
+  const all = Array.from(fileList || []);
+  const files = all.filter((file) => isSupportedFile(file));
+  const skipped = all.length - files.length;
+  if (skipped) {
+    toast(`已跳过 ${skipped} 个不支持的文件（仅支持 ${TEXT_EXTS.join(' / ')} 与图片）`, 'info', 4000);
+  }
+  if (!files.length) return;
+
+  const capacity = MAX_ATTACHMENTS - state.attachments.length;
+  if (capacity <= 0) {
+    toast(`附件最多 ${MAX_ATTACHMENTS} 个`, 'error');
+    return;
+  }
+  if (files.length > capacity) {
+    toast(`附件最多 ${MAX_ATTACHMENTS} 个，仅添加前 ${capacity} 个`, 'error', 4000);
+  }
+  for (const file of files.slice(0, capacity)) {
     if (isDuplicateAttachment(state.attachments, file)) {
       toast(`已添加过：${file.name}`, 'error');
       continue;
@@ -209,7 +232,38 @@ function doSend() {
   sendMessage(text);
 }
 
-/* ---------- 拖拽 / 粘贴 ---------- */
+/* ---------- 拖拽 / 粘贴 / 文件夹 ---------- */
+async function walkEntry(entry, out) {
+  if (!entry) return;
+  if (entry.isFile) {
+    const file = await new Promise((res) => entry.file(res, () => res(null)));
+    if (file) out.push(file);
+  } else if (entry.isDirectory) {
+    const reader = entry.createReader();
+    // readEntries 每次最多返回 100 条，需循环读到空
+    for (;;) {
+      const batch = await new Promise((res) => reader.readEntries(res, () => res([])));
+      if (!batch.length) break;
+      for (const child of batch) await walkEntry(child, out);
+    }
+  }
+}
+
+// 拖入文件夹时用 webkitGetAsEntry 递归展开；entry 引用必须在 items 存活时同步取得
+function collectFromDataTransfer(dt) {
+  const entries = [];
+  if (dt.items && dt.items.length) {
+    for (const item of dt.items) {
+      const entry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null;
+      if (entry) entries.push(entry);
+    }
+  }
+  if (!entries.length) return Promise.resolve(Array.from(dt.files || []));
+  const files = [];
+  return Promise.all(entries.map((entry) => walkEntry(entry, files)))
+    .then(() => (files.length ? files : Array.from(dt.files || [])));
+}
+
 function bindDrop() {
   const composer = $('composer');
   let depth = 0;
@@ -231,7 +285,8 @@ function bindDrop() {
     e.preventDefault();
     depth = 0;
     composer.classList.remove('drop-active');
-    await addAttachmentFiles(e.dataTransfer.files);
+    const files = await collectFromDataTransfer(e.dataTransfer);
+    await addAttachmentFiles(files);
   });
 
   $('chat-input').addEventListener('paste', async (e) => {
@@ -259,6 +314,7 @@ export function initInput() {
   // 回形针图标：直接用路径，避免图标库缺项
   $('btn-attach').innerHTML =
     '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M11.5 4.5v6a3.5 3.5 0 1 1-7 0V5a2.5 2.5 0 0 1 5 0v5.5a1.5 1.5 0 0 1-3 0V5.5a.5.5 0 0 1 1 0v5a.5.5 0 0 0 1 0V5a1.5 1.5 0 0 0-3 0v5.5a2.5 2.5 0 0 0 5 0V4.5a2.5 2.5 0 0 0-5 0V10"/></svg>';
+  $('btn-folder-attach').innerHTML = icon('folderPlus', 15);
   btn.innerHTML = icon('arrowUp', 16);
 
   ta.addEventListener('input', () => { autoResize(); updateSendState(); });
@@ -292,7 +348,18 @@ export function initInput() {
     }
     $('chat-attach-input').click();
   });
+  $('btn-folder-attach').addEventListener('click', () => {
+    if (state.convMode !== 'chat') {
+      toast('知识库模式不使用附件，请切换到聊天模式', 'error');
+      return;
+    }
+    $('chat-folder-input').click();
+  });
   $('chat-attach-input').addEventListener('change', async (e) => {
+    await addAttachmentFiles(e.target.files);
+    e.target.value = '';
+  });
+  $('chat-folder-input').addEventListener('change', async (e) => {
     await addAttachmentFiles(e.target.files);
     e.target.value = '';
   });
