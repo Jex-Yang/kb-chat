@@ -6,7 +6,7 @@ import { state, MAX_ATTACHMENTS } from './state.js';
 import { api } from './api.js';
 import { icon } from './icons.js';
 import {
-  fmtInt, fmtDuration, fmtSeconds, fmtPct, fmtTps,
+  fmtInt, fmtDuration, fmtSeconds, fmtPct, fmtTps, fmtCompact,
   mdRender, throttle, toast, copyText, isNearBottom, scrollToBottom,
   extOf, isImageFile, uid,
 } from './util.js';
@@ -31,6 +31,7 @@ export function clearChat() {
   wrap.hidden = true;
   empty.hidden = false;
   state.currentMessages = [];
+  state.compactions = [];
   setSpeed(null, false);
   updateQuickNav();
 }
@@ -40,16 +41,65 @@ function showMessages() {
   document.getElementById('messages').hidden = false;
 }
 
-export function renderHistory(messages) {
+/* 上下文压缩检查点：插在 cutoff 那条消息之后，默认折叠 */
+function buildCompactionCard(comp) {
+  const el = document.createElement('div');
+  el.className = 'compact-card';
+  if (comp.id != null) el.dataset.compactionId = String(comp.id);
+  const count = Number(comp.shadowedCount) || 0;
+  const shadowed = Number(comp.shadowedTokens) || 0;
+  const summary = Number(comp.summaryTokens) || 0;
+  const sourceLabel = comp.source === 'manual' ? '手动压缩'
+    : comp.source === 'overflow' ? '超限压缩' : '自动压缩';
+  el.innerHTML =
+    `<button type="button" class="compact-toggle" aria-expanded="false">` +
+    `<span class="compact-ico">${icon('list', 13)}</span>` +
+    `<span class="compact-title">上下文已压缩</span>` +
+    `<span class="compact-meta">${fmtInt(count)} 条 · ~${fmtCompact(shadowed)} → ~${fmtCompact(summary)} tok</span>` +
+    `<span class="compact-source">${sourceLabel}</span>` +
+    `<span class="compact-caret">${icon('chevronDown', 11)}</span>` +
+    `</button>` +
+    `<div class="compact-body" hidden>` +
+    `<p class="compact-note">模型从这里继续：上方较早的消息已被这条摘要替代，原始消息仍保留在本地。</p>` +
+    `<div class="compact-summary md-body"></div>` +
+    `</div>`;
+  el.querySelector('.compact-summary').innerHTML = mdRender(comp.summary || '');
+  const toggle = el.querySelector('.compact-toggle');
+  const body = el.querySelector('.compact-body');
+  toggle.addEventListener('click', () => {
+    const open = body.hidden;
+    body.hidden = !open;
+    toggle.setAttribute('aria-expanded', String(open));
+    el.classList.toggle('open', open);
+  });
+  return el;
+}
+
+function insertCompactionCard(comp) {
+  const wrap = document.getElementById('messages');
+  if (!wrap || !comp || comp.endMessageId == null) return;
+  // 后端只保留最新一条检查点：新摘要覆盖旧摘要，界面上也只留一张卡
+  wrap.querySelectorAll('.compact-card').forEach((el) => el.remove());
+  const card = buildCompactionCard(comp);
+  const anchor = wrap.querySelector(`[data-msg-id="${comp.endMessageId}"]`);
+  if (anchor) anchor.after(card);
+  else wrap.prepend(card);
+}
+
+export function renderHistory(messages, compactions = []) {
   pinnedNavIndex = null;
   clearQnPad();
   const wrap = document.getElementById('messages');
   wrap.innerHTML = '';
   state.currentMessages = Array.isArray(messages) ? messages.slice() : [];
+  state.compactions = Array.isArray(compactions) ? compactions.slice() : [];
   if (!state.currentMessages.length) {
     clearChat();
     return;
   }
+  const cardsByEnd = new Map();
+  state.compactions.forEach((c) => cardsByEnd.set(String(c.endMessageId), c));
+  const placed = new Set();
   state.currentMessages.forEach((m) => {
     if (m.role === 'user') {
       wrap.appendChild(buildUserBlock(m));
@@ -66,6 +116,15 @@ export function renderHistory(messages) {
         createdAt: m.createdAt,
       }).el);
     }
+    const comp = cardsByEnd.get(String(m.id));
+    if (comp && !placed.has(String(comp.id))) {
+      placed.add(String(comp.id));
+      wrap.appendChild(buildCompactionCard(comp));
+    }
+  });
+  // 检查点覆盖的消息被删过时，仍把摘要放在最前面，避免模型背景在界面上不可见
+  state.compactions.forEach((c) => {
+    if (!placed.has(String(c.id))) wrap.prepend(buildCompactionCard(c));
   });
   showMessages();
   stickToBottom = true;
@@ -122,7 +181,7 @@ async function switchTurnVersion(m, targetVersion) {
     state.currentMessages = conv.messages || [];
     state.conversationUsage = conv.usage || state.conversationUsage;
     if (conv.title) state.currentConvTitle = conv.title;
-    renderHistory(state.currentMessages);
+    renderHistory(state.currentMessages, conv.compactions || []);
     refreshUsage(state.currentConvId);
     const blocks = [...document.querySelectorAll('#messages .msg-user-wrap')];
     blocks[turnIndex]?.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -450,7 +509,7 @@ function startEditUserMessage(userWrap, m) {
         state.currentMessages = conv.messages || [];
         state.conversationUsage = conv.usage || state.conversationUsage;
         if (conv.title) state.currentConvTitle = conv.title;
-        renderHistory(state.currentMessages);
+        renderHistory(state.currentMessages, conv.compactions || []);
         refreshUsage(state.currentConvId);
         const blocks = [...document.querySelectorAll('#messages .msg-user-wrap')];
         blocks[turnIndex]?.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -640,9 +699,51 @@ function attachmentPayload(list, mode) {
   });
 }
 
+let compacting = false;
+
+/** 手动压缩当前会话（弹层按钮 / /compact 命令共用） */
+async function compactCurrent() {
+  if (compacting) return;
+  if (state.sending) { toast('请等待当前回复完成或先停止', 'error'); return; }
+  if (!state.currentConvId) { toast('请先打开一个对话', 'info'); return; }
+  compacting = true;
+  state.compacting = true;
+  const convId = state.currentConvId;
+  document.dispatchEvent(new CustomEvent('compact-state', { detail: { busy: true } }));
+  try {
+    const res = await api.compactConversation(convId);
+    if (state.currentConvId !== convId) return; // 压缩期间切换了会话
+    if (!res.compacted) {
+      toast(res.reason || '没有可压缩的历史（至少需要两轮完整对话）', 'info', 3200);
+      return;
+    }
+    const conv = await api.getConversation(convId);
+    if (state.currentConvId !== convId) return;
+    state.currentMessages = conv.messages || [];
+    state.compactions = conv.compactions || [];
+    renderHistory(state.currentMessages, state.compactions);
+    refreshUsage(convId);
+    const c = res.compaction || {};
+    toast(`已压缩 ${fmtInt(c.shadowedCount)} 条较早消息（~${fmtCompact(c.shadowedTokens)} → ~${fmtCompact(c.summaryTokens)} tok）`,
+      'success', 2800);
+  } catch (e) {
+    toast('压缩失败：' + e.message, 'error');
+  } finally {
+    compacting = false;
+    state.compacting = false;
+    document.dispatchEvent(new CustomEvent('compact-state', { detail: { busy: false } }));
+  }
+}
+
 export async function sendMessage(text) {
   const content = String(text ?? '').trim();
   const snapshot = state.attachments.slice();
+  // 斜杠命令：不新建对话、不清空草稿
+  if (/^\/(compact|压缩)\s*$/i.test(content)) {
+    await compactCurrent();
+    return;
+  }
+  if (state.compacting) { toast('正在压缩上下文，请稍候…', 'info'); return; }
   if ((!content && !snapshot.length) || state.sending || state.quotaFull) return;
 
   if (!state.currentConvId) {
@@ -731,6 +832,7 @@ async function sendStream(text, { attachments = [], displayText = text, anchor =
         message: content,
         displayMessage: displayText,
         mode: state.convMode,
+        providerId: state.providerId || undefined,
         model: state.model || undefined,
         depth: state.depth,
         attachments: attachmentPayload(attachments, state.convMode),
@@ -841,7 +943,38 @@ function handleEvent(evt, ai, renderThrottled, startedAt) {
     case 'retry': {
       state.retryAttempt = evt.attempt ?? 0;
       ai.retry.hidden = false;
+      ai.retry.classList.remove('compacting');
       ai.retry.textContent = `上游限流，自动重试中…（第 ${evt.attempt ?? '?'} 次，会一直重试直到成功）`;
+      break;
+    }
+    case 'compaction': {
+      if (evt.status === 'start') {
+        ai.retry.hidden = false;
+        ai.retry.classList.add('compacting');
+        ai.retry.textContent = evt.reason === 'overflow'
+          ? '上下文超出窗口，正在压缩较早消息后重试…'
+          : '上下文接近上限，正在压缩较早的对话…';
+      } else if (evt.status === 'done') {
+        ai.retry.hidden = true;
+        ai.retry.classList.remove('compacting');
+        if (evt.endMessageId != null) {
+          insertCompactionCard({
+            id: evt.id, summary: evt.summary,
+            shadowedCount: evt.shadowedCount, shadowedTokens: evt.shadowedTokens,
+            summaryTokens: evt.summaryTokens, source: evt.source || evt.reason,
+            endMessageId: evt.endMessageId,
+          });
+        }
+      } else {
+        ai.retry.hidden = true;
+        ai.retry.classList.remove('compacting');
+        if (evt.status === 'error') {
+          const tail = evt.reason === 'overflow'
+            ? '（上游仍会报上下文超限，请手动压缩或新建对话）'
+            : '（本轮继续使用完整历史）';
+          toast('自动压缩失败：' + (evt.message || '未知错误') + tail, 'info', 4600);
+        }
+      }
       break;
     }
     case 'error': {
@@ -966,7 +1099,7 @@ export function updateQuickNav() {
   if (!nav) return;
   const blocks = userBlocks();
   const sc = document.getElementById('chat-scroll');
-  if (!state.showQuickNav || !blocks.length) {
+  if (!state.showQuickNav || blocks.length < 2) {
     nav.hidden = true;
     const preview = document.getElementById('qn-preview');
     if (preview) preview.hidden = true;
@@ -1159,6 +1292,9 @@ export function initChat() {
     });
   document.addEventListener('quicknav-change', () => {
     updateQuickNav();
+  });
+  document.addEventListener('compact-request', () => {
+    compactCurrent();
   });
   document.addEventListener('conv-mode-change', () => {
     });

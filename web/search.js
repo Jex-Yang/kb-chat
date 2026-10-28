@@ -128,11 +128,14 @@ function closeSearch() {
 }
 
 export function initSearch() {
-  $('conv-search-ico').innerHTML = icon('search', 13);
+  const searchBtn = $('btn-open-search');
+  if (searchBtn) searchBtn.innerHTML = icon('search', 15);
+  const legIco = $('conv-search-ico');
+  if (legIco) legIco.innerHTML = icon('search', 13);
   $('search-head-ico').innerHTML = icon('search', 16);
   $('search-close').innerHTML = icon('close', 15);
 
-  $('btn-open-search').addEventListener('click', openSearch);
+  searchBtn?.addEventListener('click', openSearch);
   $('search-close').addEventListener('click', closeSearch);
   $('search-modal').addEventListener('click', (e) => {
     if (e.target === $('search-modal')) closeSearch();

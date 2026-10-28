@@ -11,8 +11,9 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlparse
 
-from . import tokens
+from . import config, tokens
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "kb.db"
 
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS messages (
   attachments TEXT,
   cache_hit_tokens INTEGER,
   cache_miss_tokens INTEGER,
+  content_tokens INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS turn_versions (
@@ -81,6 +83,29 @@ CREATE TABLE IF NOT EXISTS turn_versions (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id, id);
 CREATE INDEX IF NOT EXISTS idx_turn_versions_conv ON turn_versions(conv_id, turn_index);
+CREATE TABLE IF NOT EXISTS compactions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conv_id INTEGER NOT NULL,
+  summary TEXT NOT NULL,
+  start_message_id INTEGER NOT NULL,
+  end_message_id INTEGER NOT NULL,
+  shadowed_count INTEGER NOT NULL DEFAULT 0,
+  shadowed_tokens INTEGER NOT NULL DEFAULT 0,
+  summary_tokens INTEGER NOT NULL DEFAULT 0,
+  model TEXT,
+  source TEXT NOT NULL DEFAULT 'auto',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_compactions_conv ON compactions(conv_id, id);
+CREATE TABLE IF NOT EXISTS providers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  base_url TEXT NOT NULL,
+  api_key TEXT NOT NULL DEFAULT '',
+  models TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS usage_daily (
   date TEXT PRIMARY KEY,
   tokens INTEGER NOT NULL DEFAULT 0
@@ -117,7 +142,10 @@ def init(db_path: Path = DB_PATH) -> None:
     _conn.executescript(DDL)
     _migrate(_conn)
     _backfill_file_tokens(_conn)
+    _backfill_message_tokens(_conn)
     _backfill_titles(_conn)
+    _seed_providers(_conn)
+    _repair_providers(_conn)
     _conn.commit()
 
 
@@ -140,10 +168,277 @@ def _migrate(c: sqlite3.Connection) -> None:
         c.execute("ALTER TABLE messages ADD COLUMN cache_hit_tokens INTEGER")
     if "cache_miss_tokens" not in msg_cols:
         c.execute("ALTER TABLE messages ADD COLUMN cache_miss_tokens INTEGER")
+    if "content_tokens" not in msg_cols:
+        c.execute("ALTER TABLE messages ADD COLUMN content_tokens INTEGER NOT NULL DEFAULT 0")
 
     file_cols = {r["name"] for r in c.execute("PRAGMA table_info(files)")}
     if "tokens" not in file_cols:
         c.execute("ALTER TABLE files ADD COLUMN tokens INTEGER NOT NULL DEFAULT 0")
+
+
+def _backfill_message_tokens(c: sqlite3.Connection) -> None:
+    """补齐消息正文的精确 token 数（只扫 content_tokens=0 的非空消息，幂等）。"""
+    rows = c.execute(
+        "SELECT id, content FROM messages WHERE content_tokens=0 AND content<>''").fetchall()
+    for row in rows:
+        c.execute("UPDATE messages SET content_tokens=? WHERE id=?",
+                  (tokens.count(row["content"]), row["id"]))
+
+
+DEEPSEEK_BASE = "https://api.deepseek.com/v1"
+SENSENOVA_BASE = "https://token.sensenova.cn/v1"
+
+
+def _provider_name_from_url(url: str) -> str:
+    host = (urlparse(url).hostname or "").strip().lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if host.startswith("api."):
+        host = host[4:]
+    label = host.split(".")[0] if host else ""
+    return label or "自定义提供商"
+
+
+def _seed_providers(c: sqlite3.Connection) -> None:
+    """首次启动创建 DeepSeek / 商汤 SenseNova 两个官方提供商。
+
+    旧的 base_url/key 如果指向商汤或 DeepSeek，就迁移到对应提供商；如果指向
+    第三方网关（例如 qnaigc），保留为一个独立的“自定义提供商”，不冒充商汤。
+    """
+    def setting(key: str) -> str | None:
+        row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def put_setting(key: str, value: str) -> None:
+        c.execute("INSERT INTO settings(key,value) VALUES(?,?) "
+                  "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+
+    count = int(c.execute("SELECT COUNT(*) AS n FROM providers").fetchone()["n"])
+    if count:
+        pid = setting("provider_id")
+        try:
+            ok = pid is not None and c.execute(
+                "SELECT 1 FROM providers WHERE id=?", (int(pid),)).fetchone()
+        except (TypeError, ValueError):
+            ok = False
+        if not ok:
+            first = c.execute("SELECT id FROM providers ORDER BY id LIMIT 1").fetchone()
+            if first:
+                put_setting("provider_id", str(first["id"]))
+        return
+
+    current_base = (setting("base_url") or config.DEFAULTS.get("base_url") or "").strip()
+    current_key = setting("api_key")
+    if current_key is None:
+        current_key = config.DEFAULTS.get("api_key", "")
+    current_model = (setting("model") or config.DEFAULTS.get("model")
+                     or "deepseek-flash").strip() or "deepseek-flash"
+
+    lower_base = current_base.lower()
+    is_sensenova = (not current_base) or "sensenova" in lower_base
+    is_deepseek = ("deepseek" in lower_base) and not is_sensenova
+    is_custom = bool(current_base) and not is_sensenova and not is_deepseek
+
+    deepseek_models = ["deepseek-chat", "deepseek-reasoner"]
+    sensenova_models = ["deepseek-flash"]
+    if is_deepseek and current_model not in deepseek_models:
+        deepseek_models.append(current_model)
+    if is_sensenova and current_model not in sensenova_models:
+        sensenova_models.append(current_model)
+
+    providers: list[tuple[str, str, str, list[str]]] = [
+        ("DeepSeek", DEEPSEEK_BASE,
+         current_key if is_deepseek else "", deepseek_models),
+        ("商汤 SenseNova", SENSENOVA_BASE,
+         current_key if is_sensenova else "", sensenova_models),
+    ]
+    active_index = 0 if is_deepseek else 1
+    if is_custom:
+        custom_models = ["deepseek-flash"]
+        if current_model not in custom_models:
+            custom_models.append(current_model)
+        custom_name = _provider_name_from_url(current_base)
+        if custom_name in ("DeepSeek", "商汤 SenseNova"):
+            custom_name += "（自定义）"
+        providers.append((custom_name, current_base, current_key, custom_models))
+        active_index = 2
+
+    ts = now()
+    ids: list[int] = []
+    for name, base_url, api_key, models in providers:
+        cur = c.execute(
+            "INSERT INTO providers(name,base_url,api_key,models,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (name, base_url, api_key, json.dumps(models, ensure_ascii=False), ts, ts))
+        ids.append(int(cur.lastrowid))
+    put_setting("provider_id", str(ids[active_index]))
+    put_setting("model", current_model)
+
+
+def _repair_providers(c: sqlite3.Connection) -> None:
+    """修复旧版本把第三方地址错误命名为「商汤 SenseNova」的数据。
+
+    旧逻辑把任何非 DeepSeek 的 base_url 都写进商汤条目。现在把该条目的原地址/
+    密钥/模型迁到一个独立自定义提供商，商汤条目恢复官方 token.sensenova.cn。
+    """
+    def setting(key: str) -> str | None:
+        row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def put_setting(key: str, value: str) -> None:
+        c.execute("INSERT INTO settings(key,value) VALUES(?,?) "
+                  "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+
+    active_raw = setting("provider_id")
+    try:
+        active_id = int(active_raw) if active_raw not in (None, "") else None
+    except (TypeError, ValueError):
+        active_id = None
+
+    rows = c.execute("SELECT * FROM providers ORDER BY id").fetchall()
+    for row in rows:
+        name = (row["name"] or "").strip()
+        url = (row["base_url"] or "").strip()
+        if name != "商汤 SenseNova" or "sensenova" in url.lower():
+            continue
+        new_id: int | None = None
+        if url:
+            custom_name = _provider_name_from_url(url)
+            if custom_name in ("DeepSeek", "商汤 SenseNova"):
+                custom_name += "（自定义）"
+            existing = c.execute(
+                "SELECT * FROM providers WHERE base_url=? AND id<>?",
+                (url, row["id"])).fetchone()
+            old_models = provider_models(row)
+            if existing is not None:
+                new_id = int(existing["id"])
+                merged = provider_models(existing)
+                for model in old_models:
+                    if model not in merged:
+                        merged.append(model)
+                current_model = setting("model")
+                if current_model and current_model not in merged:
+                    merged.append(current_model)
+                c.execute(
+                    "UPDATE providers SET models=?, updated_at=? WHERE id=?",
+                    (json.dumps(merged, ensure_ascii=False), now(), new_id))
+                if not (existing["api_key"] or "").strip() and (row["api_key"] or "").strip():
+                    c.execute("UPDATE providers SET api_key=? WHERE id=?",
+                              (row["api_key"], new_id))
+            else:
+                models = list(old_models)
+                current_model = setting("model")
+                if current_model and current_model not in models:
+                    models.append(current_model)
+                cur = c.execute(
+                    "INSERT INTO providers(name,base_url,api_key,models,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (custom_name, url, row["api_key"] or "",
+                     json.dumps(models, ensure_ascii=False), row["created_at"], now()))
+                new_id = int(cur.lastrowid)
+            if active_id == int(row["id"]):
+                put_setting("provider_id", str(new_id))
+        c.execute(
+            "UPDATE providers SET name=?, base_url=?, api_key='', models=?, updated_at=? "
+            "WHERE id=?",
+            ("商汤 SenseNova", SENSENOVA_BASE,
+             json.dumps(["deepseek-flash"], ensure_ascii=False), now(), int(row["id"])))
+
+
+# ---------- providers（模型提供商） ----------
+def provider_models(row: sqlite3.Row) -> list[str]:
+    try:
+        data = json.loads(row["models"] or "[]")
+    except (TypeError, ValueError):
+        data = []
+    if not isinstance(data, list):
+        return []
+    out: list[str] = []
+    for item in data:
+        name = str(item or "").strip()
+        if name and name not in out:
+            out.append(name[:100])
+    return out[:200]
+
+
+def list_providers() -> list[sqlite3.Row]:
+    return query("SELECT * FROM providers ORDER BY id")
+
+
+def get_provider(provider_id: int | str | None) -> sqlite3.Row | None:
+    if provider_id is None:
+        return None
+    try:
+        pid = int(provider_id)
+    except (TypeError, ValueError):
+        return None
+    return conn().execute("SELECT * FROM providers WHERE id=?", (pid,)).fetchone()
+
+
+def active_provider() -> sqlite3.Row | None:
+    pid = get_setting("provider_id")
+    row = get_provider(pid)
+    if row is not None:
+        return row
+    rows = list_providers()
+    return rows[0] if rows else None
+
+
+def create_provider(name: str, base_url: str, api_key: str,
+                    models: list[str]) -> int:
+    ts = now()
+    cur = _exec(
+        "INSERT INTO providers(name,base_url,api_key,models,created_at,updated_at) "
+        "VALUES(?,?,?,?,?,?)",
+        (name, base_url, api_key, json.dumps(models, ensure_ascii=False), ts, ts))
+    return int(cur.lastrowid)
+
+
+def update_provider(provider_id: int, *, name: str | None = None,
+                    base_url: str | None = None, api_key: str | None = None,
+                    models: list[str] | None = None) -> None:
+    sets: list[str] = []
+    params: list[Any] = []
+    if name is not None:
+        sets.append("name=?"); params.append(name)
+    if base_url is not None:
+        sets.append("base_url=?"); params.append(base_url)
+    if api_key is not None:
+        sets.append("api_key=?"); params.append(api_key)
+    if models is not None:
+        sets.append("models=?"); params.append(json.dumps(models, ensure_ascii=False))
+    if not sets:
+        return
+    sets.append("updated_at=?"); params.append(now())
+    params.append(provider_id)
+    _exec(f"UPDATE providers SET {', '.join(sets)} WHERE id=?", params)
+
+
+def delete_provider(provider_id: int) -> bool:
+    with _lock:
+        row = conn().execute("SELECT id FROM providers WHERE id=?", (provider_id,)).fetchone()
+        if not row:
+            return False
+        conn().execute("DELETE FROM providers WHERE id=?", (provider_id,))
+        active = conn().execute(
+            "SELECT value FROM settings WHERE key='provider_id'").fetchone()
+        if active is None or str(active["value"]) == str(provider_id):
+            first = conn().execute(
+                "SELECT id FROM providers WHERE COALESCE(api_key,'')<>'' "
+                "ORDER BY id LIMIT 1").fetchone()
+            if first is None:
+                first = conn().execute(
+                    "SELECT id FROM providers ORDER BY id LIMIT 1").fetchone()
+            conn().execute(
+                "INSERT INTO settings(key,value) VALUES('provider_id',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(first["id"]) if first else "",))
+        conn().commit()
+    return True
+
+
+def set_active_provider(provider_id: int) -> None:
+    save_settings({"provider_id": str(provider_id)})
 
 
 def _backfill_titles(c: sqlite3.Connection) -> None:
@@ -349,6 +644,7 @@ def update_conversation(conv_id: int, title: str | None = None,
 def delete_conversation(conv_id: int) -> None:
     _exec("DELETE FROM messages WHERE conv_id=?", (conv_id,))
     _exec("DELETE FROM turn_versions WHERE conv_id=?", (conv_id,))
+    _exec("DELETE FROM compactions WHERE conv_id=?", (conv_id,))
     _exec("DELETE FROM conversations WHERE id=?", (conv_id,))
 
 
@@ -378,8 +674,14 @@ def last_message(conv_id: int) -> sqlite3.Row | None:
 
 
 def delete_messages_from(conv_id: int, message_id: int) -> int:
-    """删除 message_id 及其后所有消息（原位编辑/重新生成的截断），返回删除条数。"""
+    """删除 message_id 及其后所有消息（原位编辑/重新生成的截断），返回删除条数。
+
+    摘要检查点如果覆盖了被删消息就一并失效：历史已经变了，旧摘要不再可信。
+    """
     with _lock:
+        conn().execute(
+            "DELETE FROM compactions WHERE conv_id=? AND end_message_id>=?",
+            (conv_id, message_id))
         cur = conn().execute(
             "DELETE FROM messages WHERE conv_id=? AND id>=?", (conv_id, message_id))
         conn().commit()
@@ -422,6 +724,7 @@ def turn_snapshot(conv_id: int, turn_index: int) -> list[dict[str, Any]]:
     for m in list_messages(conv_id):
         if start <= int(m["id"]) <= end:
             out.append({
+                "id": int(m["id"]),
                 "role": m["role"], "content": m["content"],
                 "reasoning": m["reasoning"],
                 "prompt_tokens": int(m["prompt_tokens"] or 0),
@@ -431,6 +734,7 @@ def turn_snapshot(conv_id: int, turn_index: int) -> list[dict[str, Any]]:
                 "attachments": m["attachments"],
                 "cache_hit_tokens": m["cache_hit_tokens"],
                 "cache_miss_tokens": m["cache_miss_tokens"],
+                "content_tokens": int(m["content_tokens"] or 0),
             })
     return out
 
@@ -471,26 +775,45 @@ def activate_turn_version(conv_id: int, turn_index: int, version: int) -> bool:
     start, end = ranges[turn_index]
     msgs = json.loads(row[0]["data"])
     with _lock:
+        range_ids = [int(r["id"]) for r in conn().execute(
+            "SELECT id FROM messages WHERE conv_id=? AND id>=? AND id<=? ORDER BY id",
+            (conv_id, start, end)).fetchall()]
         conn().execute(
             "DELETE FROM messages WHERE conv_id=? AND id>=? AND id<=?",
             (conv_id, start, end))
-        for m in msgs:
+        occupied = {int(r["id"]) for r in conn().execute(
+            "SELECT id FROM messages WHERE conv_id=?", (conv_id,)).fetchall()}
+        # 优先复用快照里的原消息 id，保证切回旧版本后消息仍在原来的位置。
+        # 旧快照没有 id 且条数一致时，用当前轮次区间的 id 对齐。
+        same_len = len(msgs) == len(range_ids)
+        for idx, m in enumerate(msgs):
+            content = m.get("content", "")
+            mid = m.get("id")
+            if not isinstance(mid, int):
+                mid = range_ids[idx] if same_len else None
+            if mid is not None and (mid in occupied or not (start <= mid <= end)):
+                mid = None
+            if mid is not None:
+                occupied.add(mid)
             conn().execute(
-                "INSERT INTO messages(conv_id,role,content,reasoning,prompt_tokens,"
+                "INSERT INTO messages(id,conv_id,role,content,reasoning,prompt_tokens,"
                 "completion_tokens,elapsed_ms,display_content,attachments,"
-                "cache_hit_tokens,cache_miss_tokens,created_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                (conv_id, m.get("role"), m.get("content", ""), m.get("reasoning"),
+                "cache_hit_tokens,cache_miss_tokens,content_tokens,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (mid, conv_id, m.get("role"), content, m.get("reasoning"),
                  int(m.get("prompt_tokens") or 0), int(m.get("completion_tokens") or 0),
                  int(m.get("elapsed_ms") or 0), m.get("display_content"),
                  m.get("attachments"), m.get("cache_hit_tokens"),
-                 m.get("cache_miss_tokens"), now()))
+                 m.get("cache_miss_tokens"),
+                 int(m.get("content_tokens") or 0) or tokens.count(content), now()))
         conn().execute(
             "UPDATE turn_versions SET active=0 WHERE conv_id=? AND turn_index=?",
             (conv_id, turn_index))
         conn().execute(
             "UPDATE turn_versions SET active=1 WHERE conv_id=? AND turn_index=? AND version=?",
             (conv_id, turn_index, version))
+        # 轮次版本切换会重写历史 id 与内容，旧摘要不再与当前历史对应
+        conn().execute("DELETE FROM compactions WHERE conv_id=?", (conv_id,))
         conn().commit()
     touch_conversation(conv_id)
     return True
@@ -507,6 +830,52 @@ def turn_version_summary(conv_id: int) -> dict[int, dict[str, int]]:
         "FROM turn_versions WHERE conv_id=? GROUP BY turn_index", (conv_id,))
     return {int(r["turn_index"]): {"count": int(r["total"]), "active": int(r["active"])}
             for r in rows}
+
+
+# ---------- compactions（上下文压缩检查点） ----------
+def context_messages(conv_id: int) -> list[sqlite3.Row]:
+    """当前应发给模型的 user/assistant 历史（已按最新压缩检查点裁掉旧消息）。
+
+    原消息始终保留在 messages 表里：界面、搜索、导出、版本切换都不受影响，
+    只有上游 prompt 从这里取。
+    """
+    latest = latest_compaction(conv_id)
+    cutoff = int(latest["end_message_id"]) if latest else 0
+    return query(
+        "SELECT * FROM messages WHERE conv_id=? AND role IN ('user','assistant') "
+        "AND id>? ORDER BY id", (conv_id, cutoff))
+
+
+def latest_compaction(conv_id: int) -> sqlite3.Row | None:
+    return conn().execute(
+        "SELECT * FROM compactions WHERE conv_id=? ORDER BY id DESC LIMIT 1",
+        (conv_id,)).fetchone()
+
+
+def list_compactions(conv_id: int) -> list[sqlite3.Row]:
+    return query("SELECT * FROM compactions WHERE conv_id=? ORDER BY id", (conv_id,))
+
+
+def add_compaction(conv_id: int, summary: str, start_message_id: int,
+                   end_message_id: int, shadowed_count: int, shadowed_tokens: int,
+                   summary_tokens: int, model: str | None, source: str) -> sqlite3.Row:
+    """写入一条新检查点；同一会话只保留最新一条（新摘要已合并旧摘要）。"""
+    with _lock:
+        conn().execute("DELETE FROM compactions WHERE conv_id=?", (conv_id,))
+        conn().execute(
+            "INSERT INTO compactions(conv_id,summary,start_message_id,end_message_id,"
+            "shadowed_count,shadowed_tokens,summary_tokens,model,source,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (conv_id, summary, start_message_id, end_message_id,
+             shadowed_count, shadowed_tokens, summary_tokens, model, source, now()))
+        conn().commit()
+    latest = latest_compaction(conv_id)
+    assert latest is not None
+    return latest
+
+
+def clear_compactions(conv_id: int) -> None:
+    _exec("DELETE FROM compactions WHERE conv_id=?", (conv_id,))
 
 
 def _search_snippet(text: str, q: str, width: int = 150) -> str:
@@ -576,11 +945,11 @@ def add_message(conv_id: int, role: str, content: str, reasoning: str | None = N
     cur = _exec(
         "INSERT INTO messages(conv_id,role,content,reasoning,prompt_tokens,"
         "completion_tokens,elapsed_ms,display_content,attachments,"
-        "cache_hit_tokens,cache_miss_tokens,created_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        "cache_hit_tokens,cache_miss_tokens,content_tokens,created_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (conv_id, role, content, reasoning, prompt_tokens, completion_tokens,
          elapsed_ms, display_content, attachments, cache_hit_tokens,
-         cache_miss_tokens, now()))
+         cache_miss_tokens, tokens.count(content), now()))
     touch_conversation(conv_id)
     return int(cur.lastrowid)
 
@@ -640,21 +1009,3 @@ def today_usage() -> int:
     row = conn().execute(
         "SELECT COALESCE(tokens,0) AS t FROM usage_daily WHERE date=?", (today(),)).fetchone()
     return int(row["t"] or 0) if row else 0
-
-
-# ---------- export/import ----------
-def export_all() -> dict[str, Any]:
-    def rows(table: str, order: str = "id") -> list[dict[str, Any]]:
-        return [dict(r) for r in query(f"SELECT * FROM {table} ORDER BY {order}")]
-
-    return {
-        "folders": rows("folders"),
-        "files": rows("files"),
-        "chunks": rows("chunks"),
-        "conversations": rows("conversations"),
-        "messages": rows("messages"),
-        "usage_daily": rows("usage_daily", order="date"),
-        "settings": {k: v for k, v in ((r["key"], r["value"])
-                                       for r in query("SELECT * FROM settings"))
-                     if k != "api_key"},
-    }

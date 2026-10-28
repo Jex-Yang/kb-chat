@@ -1,19 +1,21 @@
-"""KBChat REST / SSE 路由：契约 §4 全部 21 个接口。"""
+"""KBChat REST / SSE 路由：契约接口 + 手动压缩 + 模型提供商管理。"""
 from __future__ import annotations
 
-import hashlib
 import json
+import logging
 import re
 import time
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import chunker, config, db, llm, parsers, tokens
+from . import chunker, compaction, config, db, llm, parsers, tokens
 
 router = APIRouter(prefix="/api")
+logger = logging.getLogger("kbchat.api")
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_ATTACHMENTS = 500
@@ -24,16 +26,35 @@ CHAT_ATTACHMENT_TOTAL_CHARS = 600_000
 KB_SYSTEM_TEMPLATE = "你是企业知识库助手。仅依据以下资料回答，资料不足时明确说明。\n【参考资料】\n{refs}"
 KB_SYSTEM_EMPTY = "你是企业知识库助手。当前知识库中未检索到相关资料，请明确告知用户未找到依据，并基于常识谨慎回答。"
 PLAIN_SYSTEM = "你是一个乐于助人的中文 AI 助手"
-EXPORT_VERSION = 1
 
 
 # ---------- 请求模型 ----------
 class SettingsUpdate(BaseModel):
     baseUrl: str | None = None
     apiKey: str | None = Field(default=None, description="空串=不修改")
+    providerId: int | None = Field(default=None, description="切换当前提供商")
     model: str | None = None
     quota: int | None = Field(default=None, ge=0)
     depth: str | None = None
+
+
+class ProviderCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    baseUrl: str = Field(min_length=1, max_length=500)
+    apiKey: str = Field(default="", max_length=1000)
+    models: list[str] = Field(default_factory=list, max_length=200)
+
+
+class ProviderUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    baseUrl: str | None = Field(default=None, min_length=1, max_length=500)
+    apiKey: str | None = Field(default=None, max_length=1000, description="空串=不修改")
+    models: list[str] | None = Field(default=None, max_length=200)
+
+
+class ModelsFetchReq(BaseModel):
+    baseUrl: str = Field(min_length=1, max_length=500)
+    apiKey: str = Field(default="", max_length=1000)
 
 
 class FolderCreate(BaseModel):
@@ -110,6 +131,7 @@ class ChatReq(BaseModel):
                                        description="气泡中展示的原文（附件注入内容不展示）")
     mode: str | None = Field(default=None, description="chat / kb；缺省取会话自身 mode")
     useKb: bool | None = None  # 兼容旧契约：True→kb，False→chat
+    providerId: int | None = None
     model: str | None = None
     depth: str | None = None
     attachments: list[ChatAttachment] = Field(default_factory=list, max_length=MAX_ATTACHMENTS)
@@ -122,12 +144,66 @@ def health() -> dict[str, bool]:
 
 
 # ---------- #2/#3 settings ----------
-def _current_settings() -> dict[str, str]:
-    return config.get_settings(db.get_setting)
+def _current_settings() -> dict[str, Any]:
+    s = config.get_settings(db.get_setting)
+    provider = db.active_provider()
+    if provider is not None:
+        s["provider_id"] = int(provider["id"])
+        s["provider_name"] = provider["name"]
+        s["base_url"] = provider["base_url"]
+        s["api_key"] = provider["api_key"] or ""
+        models = db.provider_models(provider)
+        if not s.get("model") and models:
+            s["model"] = models[0]
+    return s
+
+
+def _provider_public(row: Any, active_id: int | None = None) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "name": row["name"],
+        "baseUrl": row["base_url"],
+        "apiKeyMasked": config.mask_key(row["api_key"] or ""),
+        "hasKey": bool((row["api_key"] or "").strip()),
+        "models": db.provider_models(row),
+        "active": active_id is not None and int(row["id"]) == int(active_id),
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def _provider_groups() -> tuple[list[dict[str, Any]], list[str], int | None]:
+    active = db.active_provider()
+    active_id = int(active["id"]) if active is not None else None
+    groups: list[dict[str, Any]] = []
+    flat: list[str] = []
+    for row in db.list_providers():
+        item = _provider_public(row, active_id)
+        groups.append(item)
+        for model in item["models"]:
+            if model not in flat:
+                flat.append(model)
+    current = db.get_setting("model")
+    if current and current not in flat:
+        flat.append(current)
+        for group in groups:
+            if group["active"]:
+                group["models"].append(current)
+                break
+    return groups, flat, active_id
 
 
 def _settings_response() -> dict[str, Any]:
-    data = config.public_settings(_current_settings())
+    s = _current_settings()
+    data = config.public_settings(s)
+    groups, flat, active_id = _provider_groups()
+    data["providerId"] = active_id
+    data["providerName"] = s.get("provider_name", "")
+    data["providers"] = groups
+    data["models"] = flat or list(config.MODELS)
+    data["baseUrl"] = s["base_url"]
+    data["apiKeyMasked"] = config.mask_key(s["api_key"])
+    data["model"] = s["model"]
     data["tokenizer"] = tokens.precision()
     data["tokenizerModel"] = "DeepSeek（内置词表）"
     return data
@@ -138,13 +214,57 @@ def get_settings() -> dict[str, Any]:
     return _settings_response()
 
 
+def _normalize_base_url(value: str) -> str:
+    url = (value or "").strip().rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(400, "API 地址必须以 http:// 或 https:// 开头")
+    if len(url) > 500:
+        raise HTTPException(400, "API 地址过长")
+    return url
+
+
+def _clean_models(models: list[str] | None) -> list[str]:
+    out: list[str] = []
+    for raw in models or []:
+        name = str(raw or "").strip()
+        if not name:
+            continue
+        if len(name) > 100:
+            raise HTTPException(400, "模型名称过长")
+        if name not in out:
+            out.append(name)
+        if len(out) > 200:
+            raise HTTPException(400, "模型数量过多（最多 200 个）")
+    return out
+
+
 @router.put("/settings")
 def put_settings(body: SettingsUpdate) -> dict[str, Any]:
     kv: dict[str, str] = {}
+    active = db.active_provider()
+
+    if body.providerId is not None:
+        provider = db.get_provider(body.providerId)
+        if provider is None:
+            raise HTTPException(404, "模型提供商不存在")
+        db.set_active_provider(int(provider["id"]))
+        active = provider
+        if body.model is None:
+            models = db.provider_models(provider)
+            if models:
+                kv["model"] = models[0]
+
     if body.baseUrl is not None:
-        kv["base_url"] = body.baseUrl.strip().rstrip("/")
+        normalized = _normalize_base_url(body.baseUrl)
+        if active is not None:
+            db.update_provider(int(active["id"]), base_url=normalized)
+        else:
+            kv["base_url"] = normalized
     if body.apiKey:  # 空串/None = 不覆盖
-        kv["api_key"] = body.apiKey.strip()
+        if active is not None:
+            db.update_provider(int(active["id"]), api_key=body.apiKey.strip())
+        else:
+            kv["api_key"] = body.apiKey.strip()
     if body.model is not None:
         model = body.model.strip()
         if not model:
@@ -163,27 +283,180 @@ def put_settings(body: SettingsUpdate) -> dict[str, Any]:
     return _settings_response()
 
 
+# ---------- 模型提供商 ----------
+@router.get("/providers")
+def get_providers() -> dict[str, Any]:
+    groups, _, active_id = _provider_groups()
+    return {"providers": groups, "activeProviderId": active_id}
+
+
+@router.post("/providers")
+def create_provider(body: ProviderCreate) -> dict[str, Any]:
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "显示名称不能为空")
+    base_url = _normalize_base_url(body.baseUrl)
+    models = _clean_models(body.models)
+    provider_id = db.create_provider(name, base_url, (body.apiKey or "").strip(), models)
+    if db.active_provider() is None:
+        db.set_active_provider(provider_id)
+        if models:
+            db.save_settings({"model": models[0]})
+    groups, _, active_id = _provider_groups()
+    return {"ok": True, "id": provider_id, "providers": groups,
+            "activeProviderId": active_id}
+
+
+@router.put("/providers/{provider_id}")
+def update_provider(provider_id: int, body: ProviderUpdate) -> dict[str, Any]:
+    row = db.get_provider(provider_id)
+    if row is None:
+        raise HTTPException(404, "模型提供商不存在")
+    name = body.name.strip() if body.name is not None else None
+    if name is not None and not name:
+        raise HTTPException(400, "显示名称不能为空")
+    base_url = _normalize_base_url(body.baseUrl) if body.baseUrl is not None else None
+    models = _clean_models(body.models) if body.models is not None else None
+    api_key = None
+    if body.apiKey is not None and body.apiKey.strip():
+        api_key = body.apiKey.strip()
+    db.update_provider(provider_id, name=name, base_url=base_url,
+                       api_key=api_key, models=models)
+    groups, _, active_id = _provider_groups()
+    return {"ok": True, "providers": groups, "activeProviderId": active_id}
+
+
+@router.delete("/providers/{provider_id}")
+def delete_provider(provider_id: int) -> dict[str, Any]:
+    if len(db.list_providers()) <= 1:
+        raise HTTPException(400, "至少保留一个模型提供商")
+    if not db.delete_provider(provider_id):
+        raise HTTPException(404, "模型提供商不存在")
+    active = db.active_provider()
+    if active is not None:
+        models = db.provider_models(active)
+        current = db.get_setting("model")
+        if models and current not in models:
+            db.save_settings({"model": models[0]})
+    groups, _, active_id = _provider_groups()
+    return {"ok": True, "providers": groups, "activeProviderId": active_id}
+
+
+async def _fetch_models_upstream(base_url: str, api_key: str) -> list[str]:
+    base_url = (base_url or "").rstrip("/")
+    if not base_url:
+        raise HTTPException(400, "请先填写 API 地址")
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as client:
+            resp = await client.get(f"{base_url}/models", headers=headers)
+    except httpx.HTTPError as exc:
+        raise HTTPException(400, f"获取模型失败：{exc}") from exc
+    if resp.status_code != 200:
+        raise HTTPException(400, f"获取模型失败：HTTP {resp.status_code} {resp.text[:200]}")
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        raise HTTPException(400, "上游没有返回合法 JSON") from exc
+    items: list[Any] = []
+    if isinstance(data, dict):
+        if isinstance(data.get("data"), list):
+            items = data["data"]
+        elif isinstance(data.get("models"), list):
+            items = data["models"]
+    out: list[str] = []
+    for item in items:
+        name = item.get("id") if isinstance(item, dict) else item
+        name = str(name or "").strip()
+        if name and name not in out:
+            out.append(name[:100])
+        if len(out) >= 200:
+            break
+    return out
+
+
+@router.post("/providers/fetch-models")
+async def fetch_models_by_config(body: ModelsFetchReq) -> dict[str, Any]:
+    models = await _fetch_models_upstream(
+        _normalize_base_url(body.baseUrl), (body.apiKey or "").strip())
+    return {"models": models}
+
+
+@router.post("/providers/{provider_id}/models")
+async def fetch_provider_models(provider_id: int) -> dict[str, Any]:
+    row = db.get_provider(provider_id)
+    if row is None:
+        raise HTTPException(404, "模型提供商不存在")
+    models = await _fetch_models_upstream(row["base_url"] or "", row["api_key"] or "")
+    return {"models": models}
+
+
 # ---------- #4 usage（语义：当前会话上下文占用，1M 为模型上下文长度，非每日配额） ----------
-@router.get("/usage")
-def usage(conversationId: int | None = None) -> dict[str, Any]:
+def _system_prompt(mode: str, query_text: str) -> str:
+    """当前请求会使用的 system prompt（知识库模式会重新检索同一批资料）。"""
+    if mode == "kb":
+        query = (query_text or "").strip()
+        hits = chunker.search(query, chunker.TOP_K) if query else []
+        if hits:
+            refs = "\n\n".join(
+                f"【资料{i + 1}】（来源：{h['fileName']}）\n{h['text']}"
+                for i, h in enumerate(hits))
+            return KB_SYSTEM_TEMPLATE.format(refs=refs)
+        return KB_SYSTEM_EMPTY
+    return PLAIN_SYSTEM
+
+
+def _usage_payload(conversation_id: int | None) -> dict[str, Any]:
     s = _current_settings()
     quota = int(s["quota"])
-    used = db.context_tokens(conversationId) if conversationId else 0
+    used = db.context_tokens(conversation_id) if conversation_id else 0
     remaining = max(quota - used, 0)
     ratio = used / quota if quota > 0 else 0.0
-    conv = db.conversation_usage(conversationId) if conversationId else {
+    conv = db.conversation_usage(conversation_id) if conversation_id else {
         "promptTokens": 0, "completionTokens": 0, "totalTokens": 0, "turns": 0}
+
+    estimated = 0
+    breakdown = {"systemTokens": 0, "textTokens": 0, "imageTokens": 0,
+                 "messageTokens": 0, "estimatedTokens": 0, "compactedTokens": 0}
+    comp = None
+    if conversation_id:
+        row = db.get_conversation(conversation_id)
+        mode = row["mode"] if row is not None and "mode" in row.keys() else "chat"
+        if mode not in ("chat", "kb"):
+            mode = "chat"
+        rows = db.context_messages(conversation_id)
+        last_user = next((r for r in reversed(rows) if r["role"] == "user"), None)
+        query = (last_user["content"] or "") if last_user is not None else ""
+        system = _system_prompt(mode, query)
+        breakdown = compaction.context_breakdown(conversation_id, system)
+        estimated = breakdown["estimatedTokens"]
+        comp = compaction.latest(conversation_id)
+
     return {
         "quota": quota,
         "used": used,
         "remaining": remaining,
         "ratio": ratio,
+        # 下一轮请求的精确分词估算（系统提示词 + 本轮文本 + 对话消息 + 检查点）
+        "estimated": estimated,
+        "estimateRatio": (estimated / quota) if quota > 0 else 0.0,
+        "estimatedRemaining": max(quota - estimated, 0),
+        "breakdown": breakdown,
+        "compaction": comp,
+        "compactionPolicy": compaction.policy(quota),
         "conversation": conv,
         "outputTokens": conv["completionTokens"],
         "todayTokens": db.today_usage(),
         "totalTokens": db.total_usage(),
         "tokenizer": tokens.precision(),
     }
+
+
+@router.get("/usage")
+def usage(conversationId: int | None = None) -> dict[str, Any]:
+    return _usage_payload(conversationId)
 
 
 # ---------- #5~8 目录树 / folders ----------
@@ -679,8 +952,38 @@ def get_conversation(conv_id: int) -> dict[str, Any]:
     return {"id": row["id"], "title": row["title"],
             "mode": row["mode"] if "mode" in row.keys() else "chat",
             "messages": messages,
+            "compactions": [compaction.compaction_dict(c)
+                            for c in db.list_compactions(conv_id)],
             "usage": db.conversation_usage(conv_id),
             "contextTokens": db.context_tokens(conv_id)}
+
+
+@router.post("/conversations/{conv_id}/compact")
+async def compact_conversation(conv_id: int) -> dict[str, Any]:
+    """手动压缩：把除最后一轮之外的都摘要成检查点（等价 DSH 的 /compact）。"""
+    row = _get_conv_or_404(conv_id)
+    s = _current_settings()
+    if not s["api_key"]:
+        raise HTTPException(400, "当前模型提供商未配置 API Key，请先在设置中填写")
+    mode = row["mode"] if "mode" in row.keys() and row["mode"] in MODES else "chat"
+    rows = db.context_messages(conv_id)
+    last_user = next((r for r in reversed(rows) if r["role"] == "user"), None)
+    # 末尾是尚未回答的 user 消息时不要把它压进摘要
+    exclude = int(last_user["id"]) if rows and rows[-1]["role"] == "user" and last_user else None
+    system = _system_prompt(mode, (last_user["content"] or "") if last_user else "")
+    try:
+        result = await compaction.compact_now(
+            conv_id, s, system=system, mode=mode,
+            exclude_message_id=exclude, model=s["model"])
+    except compaction.CompactionError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "ok": True,
+        "compacted": result is not None,
+        "compaction": result,
+        "reason": None if result else "没有可压缩的历史（至少需要两轮完整对话）",
+        "usage": _usage_payload(conv_id),
+    }
 
 
 @router.put("/conversations/{conv_id}")
@@ -798,6 +1101,9 @@ def _attachment_metadata(attachments: list[ChatAttachment]) -> list[dict[str, An
         ext = (att.ext or (att.name.rsplit(".", 1)[-1] if "." in att.name else "")).lower()[:16]
         if kind == "image":
             token_count = int(att.tokens) if att.tokens else None
+        elif att.tokens:
+            # 前端解析附件时已经精确分词，直接复用，避免每次发送重复分词
+            token_count = int(att.tokens)
         else:
             token_count = tokens.count((att.text or "")[:CHAT_ATTACHMENT_MAX_CHARS])
         meta: dict[str, Any] = {"name": att.name, "kind": kind, "ext": ext,
@@ -811,25 +1117,23 @@ def _attachment_metadata(attachments: list[ChatAttachment]) -> list[dict[str, An
 
 
 def _build_messages(conv_id: int, user_content: str | list[dict[str, Any]],
-                    mode: str) -> list[dict[str, Any]]:
+                    mode: str, system: str | None = None) -> list[dict[str, Any]]:
     # 当前这轮的 user 消息已经落库；从历史里去掉它，避免同一句话在 prompt 里出现两次
-    history = db.recent_messages(conv_id, 21)
+    history = db.context_messages(conv_id)
     if history and history[-1]["role"] == "user":
         history = history[:-1]
-    if mode == "kb":
+    if system is None:
         query_text = user_content if isinstance(user_content, str) else ""
-        hits = chunker.search(query_text, chunker.TOP_K) if query_text else []
-        if hits:
-            refs = "\n\n".join(
-                f"【资料{i + 1}】（来源：{h['fileName']}）\n{h['text']}"
-                for i, h in enumerate(hits))
-            system = KB_SYSTEM_TEMPLATE.format(refs=refs)
-        else:
-            system = KB_SYSTEM_EMPTY
-    else:
-        system = PLAIN_SYSTEM
-    return [{"role": "system", "content": system}, *history,
-            {"role": "user", "content": user_content}]
+        system = _system_prompt(mode, query_text)
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
+    # 压缩检查点作为一条 user 消息回放；它替换了 cutoff 之前的全部历史
+    checkpoint = db.latest_compaction(conv_id)
+    if checkpoint is not None:
+        messages.append({"role": "user",
+                         "content": compaction.checkpoint_text(checkpoint["summary"])})
+    messages.extend({"role": r["role"], "content": r["content"]} for r in history)
+    messages.append({"role": "user", "content": user_content})
+    return messages
 
 
 def _auto_title(conv_row: Any, message: str, attachments: list[ChatAttachment]) -> None:
@@ -852,9 +1156,35 @@ def _auto_title(conv_row: Any, message: str, attachments: list[ChatAttachment]) 
 async def chat(body: ChatReq) -> StreamingResponse:
     conv_row = _get_conv_or_404(body.conversationId)
     s = _current_settings()
-    if not s["api_key"]:
-        raise HTTPException(400, "未配置 API Key，请先在设置中填写")
-    model = body.model or s["model"]
+    provider = (db.get_provider(body.providerId)
+                if body.providerId is not None else db.active_provider())
+    if body.providerId is not None and provider is None:
+        raise HTTPException(404, "模型提供商不存在")
+    chat_settings = dict(s)
+    if provider is not None:
+        chat_settings.update({
+            "provider_id": int(provider["id"]),
+            "provider_name": provider["name"],
+            "base_url": provider["base_url"],
+            "api_key": provider["api_key"] or "",
+        })
+    if not chat_settings.get("api_key"):
+        raise HTTPException(400, "当前模型提供商未配置 API Key，请先在设置中填写")
+    model = body.model
+    if not model:
+        active_id = s.get("provider_id")
+        if (provider is not None and active_id is not None
+                and int(provider["id"]) != int(active_id)):
+            models = db.provider_models(provider)
+            model = models[0] if models else ""
+        else:
+            model = chat_settings.get("model") or ""
+    if not model and provider is not None:
+        models = db.provider_models(provider)
+        if models:
+            model = models[0]
+    if not model:
+        raise HTTPException(400, "未选择模型")
     depth = body.depth or s["depth"]
     if depth not in config.DEPTHS:
         raise HTTPException(400, f"depth 仅支持 {'、'.join(config.DEPTHS)}")
@@ -875,11 +1205,14 @@ async def chat(body: ChatReq) -> StreamingResponse:
         db.add_message(body.conversationId, "user", persisted,
                        display_content=display_text, attachments=meta_json)
     _auto_title(conv_row, body.message, body.attachments)
+    last = db.last_message(body.conversationId)
+    current_user_id = int(last["id"]) if last and last["role"] == "user" else None
 
     # 上游内容：聊天模式图片 → 视觉 content 数组；知识库模式 → 纯文本
     user_upstream = _build_user_upstream_content(body.message, body.attachments, mode) \
         if mode == "chat" else (body.message or "请回答。")
-    upstream_messages = _build_messages(body.conversationId, user_upstream, mode)
+    query_text = (body.message or "请回答。") if mode == "kb" else ""
+    system = _system_prompt(mode, query_text)
 
     async def gen():
         content_parts: list[str] = []
@@ -897,26 +1230,84 @@ async def chat(body: ChatReq) -> StreamingResponse:
                 int((time.monotonic() - start) * 1000), cache_hit, cache_miss)
 
         try:
-            async for kind, payload in llm.stream_chat(
-                    s["base_url"], s["api_key"], model, upstream_messages, depth):
-                if kind == "retry":
-                    yield _sse({"type": "retry", "attempt": int(payload)})
-                elif kind == "reasoning":
-                    reasoning_parts.append(str(payload))
-                    yield _sse({"type": "reasoning", "delta": payload})
-                elif kind == "content":
-                    content_parts.append(str(payload))
-                    yield _sse({"type": "content", "delta": payload})
-                elif kind == "usage":
-                    (prompt_tokens, completion_tokens, total,
-                     cache_hit, cache_miss) = _usage_breakdown(payload)
-                    db.add_usage(total)
-                    yield _sse({"type": "usage", "promptTokens": prompt_tokens,
-                                "completionTokens": completion_tokens,
-                                "totalTokens": total,
-                                "cacheHitTokens": cache_hit,
-                                "cacheMissTokens": cache_miss,
-                                "cacheKnown": cache_hit is not None})
+            # —— 请求前压力检查：接近窗口上限就把较早历史压成检查点 ——
+            try:
+                estimate = compaction.estimate_prompt_tokens(
+                    body.conversationId, system,
+                    exclude_message_id=current_user_id,
+                    extra_content=user_upstream)
+                if estimate >= compaction.threshold_tokens(s["quota"]):
+                    yield _sse({"type": "compaction", "status": "start",
+                                "reason": "auto", "estimatedTokens": estimate})
+                    comp = await compaction.auto_compact(
+                        body.conversationId, chat_settings, system=system, mode=mode,
+                        exclude_message_id=current_user_id,
+                        extra_content=user_upstream, model=model)
+                    if comp:
+                        yield _sse({"type": "compaction", "status": "done",
+                                    "reason": "auto", **comp})
+                    else:
+                        yield _sse({"type": "compaction", "status": "skipped",
+                                    "reason": "auto"})
+            except Exception as exc:  # 压缩失败不阻塞本轮对话
+                logger.warning("automatic compaction failed: %s", exc)
+                yield _sse({"type": "compaction", "status": "error",
+                            "reason": "auto", "message": str(exc)[:300]})
+
+            overflow_retried = False
+            while True:
+                upstream_messages = _build_messages(
+                    body.conversationId, user_upstream, mode, system=system)
+                try:
+                    async for kind, payload in llm.stream_chat(
+                            chat_settings["base_url"], chat_settings["api_key"], model,
+                            upstream_messages, depth):
+                        if kind == "retry":
+                            yield _sse({"type": "retry", "attempt": int(payload)})
+                        elif kind == "reasoning":
+                            # depth=none 时即使上游不听话返回了思维链，也不展示/落库
+                            if depth != "none":
+                                reasoning_parts.append(str(payload))
+                                yield _sse({"type": "reasoning", "delta": payload})
+                        elif kind == "content":
+                            content_parts.append(str(payload))
+                            yield _sse({"type": "content", "delta": payload})
+                        elif kind == "usage":
+                            (prompt_tokens, completion_tokens, total,
+                             cache_hit, cache_miss) = _usage_breakdown(payload)
+                            db.add_usage(total)
+                            yield _sse({"type": "usage", "promptTokens": prompt_tokens,
+                                        "completionTokens": completion_tokens,
+                                        "totalTokens": total,
+                                        "cacheHitTokens": cache_hit,
+                                        "cacheMissTokens": cache_miss,
+                                        "cacheKnown": cache_hit is not None})
+                    break
+                except Exception as exc:
+                    # 上游明确报上下文溢出：强制压缩一次后重试（只重试一次）
+                    if (not overflow_retried and not content_parts and not reasoning_parts
+                            and compaction.is_context_overflow(exc)):
+                        overflow_retried = True
+                        yield _sse({"type": "compaction", "status": "start",
+                                    "reason": "overflow"})
+                        rescued = None
+                        try:
+                            rescued = await compaction.compact_now(
+                                body.conversationId, chat_settings, system=system, mode=mode,
+                                reason="overflow", exclude_message_id=current_user_id,
+                                model=model)
+                        except Exception as comp_exc:
+                            logger.warning("overflow compaction failed: %s", comp_exc)
+                            yield _sse({"type": "compaction", "status": "error",
+                                        "reason": "overflow",
+                                        "message": str(comp_exc)[:300]})
+                        else:
+                            if rescued:
+                                yield _sse({"type": "compaction", "status": "done",
+                                            "reason": "overflow", **rescued})
+                                continue
+                    raise
+
             # —— 正常结束：落库 + done（附带会话累计，供末尾汇总卡直接使用） ——
             message_id = _persist()
             finalized = True
@@ -961,117 +1352,13 @@ def _persist_assistant(conv_id: int, content: str, reasoning: str,
                           cache_miss_tokens=cache_miss_tokens)
 
 
-# ---------- #19/#20 export / import ----------
-@router.get("/export")
-def export_data() -> StreamingResponse:
-    data = db.export_all()
-    convs = data["conversations"]
-    msg_by_conv: dict[int, list[dict[str, Any]]] = {}
-    for m in data["messages"]:
-        msg_by_conv.setdefault(m["conv_id"], []).append(m)
-    for c in convs:
-        c["messages"] = msg_by_conv.get(c["id"], [])
-    payload = {
-        "version": EXPORT_VERSION,
-        "exportedAt": db.now(),
-        "folders": data["folders"],
-        "files": data["files"],
-        "chunks": data["chunks"],
-        "conversations": convs,
-        "settings": data["settings"],
-    }
-    body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-    stamp = hashlib.sha1(body).hexdigest()[:8]
-
-    return Response(
-        content=body,
-        media_type="application/json",
-        headers={"Content-Disposition":
-                 f'attachment; filename="kbchat-export-{stamp}.json"'},
-    )
-
-
-@router.post("/import")
-async def import_data(file: UploadFile = File(...)) -> dict[str, int]:
-    raw = await file.read()
-    try:
-        data = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise HTTPException(400, f"导入文件不是合法 JSON：{exc}") from exc
-    if not isinstance(data, dict) or "version" not in data:
-        raise HTTPException(400, '导入文件缺少 version 字段')
-    if data["version"] != EXPORT_VERSION:
-        raise HTTPException(400, f"不支持的导出版本：{data['version']}（当前支持 {EXPORT_VERSION}）")
-
-    folder_map: dict[int, int] = {}
-    file_map: dict[int, int] = {}
-    conv_map: dict[int, int] = {}
-
-    for f in data.get("folders", []):
-        new_parent = folder_map.get(f.get("parent_id"))
-        # 父目录可能尚未导入（乱序），先全部按原 parent 导入，再二次修正
-        new_id = db.create_folder(f["name"], new_parent)
-        folder_map[f["id"]] = new_id
-    for f in data.get("folders", []):
-        if f.get("parent_id") is not None and f["parent_id"] in folder_map:
-            db.move_folder(folder_map[f["id"]], folder_map[f["parent_id"]])
-
-    chunk_rows_by_file: dict[int, list[dict[str, Any]]] = {}
-    for c in data.get("chunks", []):
-        chunk_rows_by_file.setdefault(c["file_id"], []).append(c)
-    for f in data.get("files", []):
-        new_fid = db.create_file(
-            folder_map.get(f.get("folder_id")), f["name"], f["ext"], f["size"],
-            f["path"], f.get("content", ""), f.get("chunk_count", 0),
-            f.get("tokens") or None)
-        file_map[f["id"]] = new_fid
-        pieces = [c["text"] for c in sorted(
-            chunk_rows_by_file.get(f["id"], []), key=lambda x: x["seq"])]
-        if pieces:
-            db.add_chunks(new_fid, folder_map.get(f.get("folder_id")), pieces)
-
-    for c in data.get("conversations", []):
-        new_cid = db.create_conversation(c["title"], c.get("mode") or "chat")
-        conv_map[c["id"]] = new_cid
-        if c.get("pinned"):
-            db.update_conversation(new_cid, pinned=True)
-        for m in c.get("messages", []):
-            attachments = m.get("attachments")
-            if isinstance(attachments, list):
-                attachments = json.dumps(attachments, ensure_ascii=False)
-            db.add_message(new_cid, m["role"], m["content"], m.get("reasoning"),
-                           m.get("prompt_tokens", 0), m.get("completion_tokens", 0),
-                           m.get("elapsed_ms", 0),
-                           display_content=m.get("display_content"),
-                           attachments=attachments,
-                           cache_hit_tokens=m.get("cache_hit_tokens"),
-                           cache_miss_tokens=m.get("cache_miss_tokens"))
-
-    for u in data.get("usage_daily", []):
-        with db._lock:
-            cur = db.conn().execute(
-                "INSERT INTO usage_daily(date,tokens) VALUES(?,?) "
-                "ON CONFLICT(date) DO UPDATE SET tokens=tokens+excluded.tokens",
-                (u["date"], u["tokens"]))
-            db.conn().commit()
-
-    imported_settings = {k: v for k, v in data.get("settings", {}).items()
-                         if k != "api_key"}
-    if imported_settings:
-        db.save_settings(imported_settings)
-
-    # 全量重建内存索引
-    rows = db.query(
-        "SELECT c.id, c.file_id, c.text, f.name AS file_name "
-        "FROM chunks c JOIN files f ON f.id=c.file_id ORDER BY c.id")
-    chunker.rebuild([{"id": r["id"], "file_id": r["file_id"],
-                      "file_name": r["file_name"], "text": r["text"]} for r in rows])
-
-    return {"folders": len(folder_map), "files": len(file_map),
-            "conversations": len(conv_map)}
-
-
 # ---------- #21 models ----------
 @router.get("/models")
-def models() -> dict[str, list[str]]:
-    return {"models": config.MODELS}
+def models() -> dict[str, Any]:
+    groups, flat, active_id = _provider_groups()
+    return {
+        "models": flat or list(config.MODELS),
+        "providers": groups,
+        "activeProviderId": active_id,
+        "model": db.get_setting("model"),
+    }

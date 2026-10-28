@@ -166,7 +166,7 @@ export async function refreshKb() {
 }
 
 export async function openFinder({ folderId = null } = {}) {
-  if (importing) { toast('正在导入，请稍候', 'error'); return; }
+  if (importing) { toast('正在添加，请稍候', 'error'); return; }
   const modal = $('finder-modal');
   if (!state.treeReady) await loadKb({ silent: true });
   if (folderId != null && folderById(folderId)) currentId = Number(folderId);
@@ -178,7 +178,7 @@ export async function openFinder({ folderId = null } = {}) {
 }
 
 function closeFinder() {
-  if (importing) { toast('正在导入，请稍候', 'error'); return; }
+  if (importing) { toast('正在添加，请稍候', 'error'); return; }
   $('finder-modal').hidden = true;
   selected.clear();
 }
@@ -418,7 +418,7 @@ function updateStatus(items) {
     $('finder-selection').textContent = '';
   }
   $('finder-hint').textContent = importing
-    ? `正在导入 ${importDone}/${importTotal}`
+    ? `正在添加 ${importDone}/${importTotal}`
     : (clipboard ? `已复制 ${clipboard.items.length} 项，⌘/Ctrl+V 粘贴` : '拖入文件 / 文件夹即可入库');
   $('finder-back').disabled = stackIndex <= 0;
   $('finder-forward').disabled = stackIndex < 0 || stackIndex >= stack.length - 1;
@@ -725,11 +725,11 @@ async function uploadEntries(list, baseId) {
     valid.push(entry);
   }
   if (valid.length > MAX_IMPORT_FILES) {
-    toast(`单次最多导入 ${MAX_IMPORT_FILES} 个文件`, 'error');
+    toast(`单次最多添加 ${MAX_IMPORT_FILES} 个文件`, 'error');
     return;
   }
   if (!valid.length) {
-    toast('没有可导入的文件（支持 txt/md/csv/pdf/docx/xlsx，≤20MB）', 'error');
+    toast('没有可添加的文件（支持 txt/md/csv/pdf/docx/xlsx，≤20MB）', 'error');
     return;
   }
   importing = true;
@@ -750,12 +750,12 @@ async function uploadEntries(list, baseId) {
         const res = await api.uploadFile(entry.file, folderId);
         importDone++;
       } catch (e) {
-        toast(`导入 ${entry.relPath} 失败：${e.message}`, 'error');
+        toast(`添加 ${entry.relPath} 失败：${e.message}`, 'error');
       }
       updateStatus();
     }
     await loadKb({ silent: true });
-    toast(`导入完成：${importDone} 个文件` +
+    toast(`添加完成：${importDone} 个文件` +
       (skipped ? `，跳过 ${skipped} 个不支持的文件` : ''), 'success', 4200);
   } finally {
     importing = false;
@@ -885,8 +885,8 @@ function bindToolbar() {
   $('finder-import').addEventListener('click', (e) => {
     e.stopPropagation();
     openMenu(e.currentTarget, [
-      { label: '导入文件', icon: 'file', onSelect: () => $('file-upload-input').click() },
-      { label: '导入文件夹', icon: 'folder', onSelect: () => $('folder-upload-input').click() },
+      { label: '添加文件', icon: 'file', onSelect: () => $('file-upload-input').click() },
+      { label: '添加文件夹', icon: 'folder', onSelect: () => $('folder-upload-input').click() },
     ], { alignRight: true });
   });
   $('file-upload-input').addEventListener('change', async (e) => {

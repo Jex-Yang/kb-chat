@@ -82,7 +82,7 @@ export function attachmentMetaText(att) {
   if (ext) parts.push(ext);
   if (att.size) parts.push(fmtBytes(att.size));
   if (att.kind === 'image') {
-    parts.push('按上游计费');
+    parts.push(att.tokens != null ? `~${fmtTokens(att.tokens)}` : '图片');
   } else if (att.tokens != null) {
     parts.push(fmtTokens(att.tokens));
   }
@@ -209,11 +209,14 @@ export function normalizeAttachmentMeta(att) {
 
 export function attachmentSummaryText(list) {
   if (!list || !list.length) return '';
-  const textItems = list.filter((a) => a.kind !== 'image');
-  const images = list.length - textItems.length;
-  const total = textItems.reduce((sum, a) => sum + (Number(a.tokens) || 0), 0);
+  const images = list.filter((a) => a.kind === 'image').length;
+  const total = list.reduce((sum, a) => sum + (Number(a.tokens) || 0), 0);
   const parts = [`附件 ${list.length}/50`];
-  if (total > 0) parts.push(`合计 ${fmtInt(total)} tokens`);
-  if (images > 0) parts.push(`${images} 张图片按上游计费`);
+  if (total > 0) {
+    parts.push(images > 0
+      ? `约 ${fmtInt(total)} tokens（含图片）`
+      : `合计 ${fmtInt(total)} tokens`);
+  }
+  if (images > 0) parts.push(`${images} 张图片 token 按尺寸估算`);
   return parts.join(' · ');
 }

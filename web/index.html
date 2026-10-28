@@ -11,8 +11,8 @@
 </head>
 <body>
   <div id="app">
-    <!-- ================= 侧边栏：只有对话 ================= -->
-    <aside id="sidebar" aria-label="对话侧边栏">
+    <!-- ================= 侧边栏 ================= -->
+    <aside id="sidebar" aria-label="侧边栏">
       <div class="sb-inner">
         <div class="sb-brand">
           <div class="brand-mark">K</div>
@@ -23,62 +23,38 @@
           <button id="btn-collapse-sidebar" class="icon-btn" title="收起侧边栏（Ctrl/⌘+B）" aria-label="收起侧边栏"></button>
         </div>
 
-        <section id="kb-section" class="kb-section" aria-label="知识库">
-          <div class="pane-head">
-            <div class="pane-title">
-              <span>知识库</span>
-              <span class="pane-count" id="kb-title-count"></span>
-            </div>
-            <div class="pane-actions">
-              <button id="btn-new-folder" class="icon-btn" title="新建目录" aria-label="新建目录"></button>
-              <button id="btn-open-finder" class="btn btn-ghost btn-xs" title="在访达中打开知识库">访达</button>
-              <button id="btn-kb-more" class="icon-btn" title="更多操作" aria-label="知识库更多操作"></button>
-            </div>
-          </div>
-          <div class="kb-toolbar">
-            <div class="kb-location" id="kb-location">全部文件</div>
-          </div>
-          <div class="tree-body">
-            <div id="tree" class="tree" role="tree"></div>
-            <div id="tree-empty" class="pane-empty" hidden>
-              <p>知识库还是空的</p>
-              <button id="btn-upload-empty" class="btn btn-primary btn-sm">在访达中打开</button>
-            </div>
-          </div>
-          <div class="kb-stats" id="kb-stats"></div>
-        </section>
-
-        <div id="sb-splitter" class="sb-splitter" title="拖动调整知识库 / 对话比例" role="separator" aria-orientation="horizontal"></div>
-
-        <section id="conv-section" class="conv-section" aria-label="对话列表">
-          <div class="pane-head">
-            <div class="pane-title">对话 <span class="pane-count" id="conv-count"></span></div>
-            <div class="pane-actions">
-              <button id="btn-conv-manage" class="icon-btn" title="批量管理" aria-label="批量管理" aria-pressed="false"></button>
-            </div>
-          </div>
-          <button id="btn-new-conv" class="conv-new-btn">
-            <span class="conv-new-ico" id="conv-new-ico"></span>
-            <span>开启新对话</span>
+        <div class="sb-top">
+          <button id="btn-new-conv" class="sb-new" type="button" title="新对话（Ctrl/⌘+K）">
+            <span class="sb-new-ico" id="conv-new-ico"></span>
+            <span class="sb-new-label">新对话</span>
           </button>
-          <button id="btn-open-search" class="conv-search-trigger" type="button" title="搜索所有对话内容">
-            <span class="conv-search-ico" id="conv-search-ico"></span>
-            <span>搜索对话</span>
-          </button>
-          <div id="conv-list" class="conv-list" role="listbox" aria-label="对话列表"></div>
 
-          <div id="conv-batch" class="conv-batch" hidden>
-            <div class="conv-batch-head">
-              <span id="conv-batch-count">已选 0 项</span>
-              <button id="conv-batch-all" class="link-btn">全选</button>
-            </div>
-            <div class="conv-batch-actions">
-              <button id="conv-batch-pin" class="btn btn-ghost btn-sm">置顶</button>
-              <button id="conv-batch-del" class="btn btn-danger btn-sm">删除</button>
-              <button id="conv-batch-cancel" class="btn btn-ghost btn-sm">取消</button>
-            </div>
+          <nav class="sb-nav" aria-label="主导航">
+            <button id="btn-open-kb" class="sb-nav-item" type="button" title="打开知识库">
+              <span class="sb-nav-ico" id="kb-nav-ico"></span>
+              <span class="sb-nav-label">知识库</span>
+              <span class="sb-nav-count" id="kb-nav-count"></span>
+            </button>
+          </nav>
+        </div>
+
+        <div class="sb-sec-head">
+          <div class="sb-sec-title">对话 <span class="sb-sec-count" id="conv-count"></span></div>
+          <div class="sb-sec-actions">
+            <button id="btn-open-search" class="sb-icon-btn" type="button" title="搜索所有对话内容" aria-label="搜索对话"></button>
           </div>
-        </section>
+        </div>
+
+        <div id="conv-list" class="conv-list" role="listbox" aria-label="对话列表"></div>
+
+        <div class="sb-foot">
+          <button id="btn-settings-side" class="sb-foot-btn" type="button" title="设置">
+            <span class="sb-foot-ico" id="ico-settings-side"></span><span>设置</span>
+          </button>
+          <button id="btn-download-conv" class="sb-foot-btn" type="button" title="下载对话（TXT）">
+            <span class="sb-foot-ico" id="ico-download-conv"></span><span>下载对话</span>
+          </button>
+        </div>
       </div>
       <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-orientation="vertical" title="拖动调整侧边栏宽度"></div>
     </aside>
@@ -106,19 +82,19 @@
         </div>
 
         <div class="topbar-spacer"></div>
-
-        <button id="btn-export-conv" class="topbar-export" title="导出全部对话（txt）">
-          <span id="topbar-export-ico"></span>
-          <span class="topbar-export-label">全部导出</span>
-        </button>
-        <button id="btn-settings-top" class="icon-btn" title="设置" aria-label="设置"></button>
       </header>
 
       <div id="chat-scroll">
         <div id="chat-empty" class="chat-empty">
+          <div class="empty-glow" aria-hidden="true"></div>
           <div class="empty-mark">K</div>
-          <h1>开始新的对话</h1>
-          <p>点左侧「知识库」管理资料，或者直接在下面提问。</p>
+          <h1>有什么可以帮你？</h1>
+          <p>知识库已就绪。可以让我总结资料、查找事实，或者直接开始聊天。</p>
+          <div class="empty-hints">
+            <span><kbd>Enter</kbd> 发送</span>
+            <span><kbd>Shift</kbd> + <kbd>Enter</kbd> 换行</span>
+            <span><kbd>Ctrl</kbd> + <kbd>K</kbd> 新对话</span>
+          </div>
         </div>
 
         <div id="messages" class="messages" hidden></div>
@@ -145,7 +121,7 @@
           <div class="composer-row">
             <button id="btn-attach" class="composer-icon" title="添加附件（可多选，最多 500 个）" aria-label="添加附件"></button>
             <button id="btn-folder-attach" class="composer-icon" title="添加文件夹（递归读取，最多 500 个）" aria-label="添加文件夹"></button>
-            <textarea id="chat-input" rows="1" placeholder="给 DeepSeek 发送消息（也可以只发附件）" aria-label="消息输入框"></textarea>
+            <textarea id="chat-input" rows="1" placeholder="发送消息（也可以只发附件）" aria-label="消息输入框"></textarea>
             <button id="btn-clear-draft" class="composer-cancel" hidden>取消</button>
             <button id="btn-send" class="send-btn" disabled aria-label="发送"></button>
           </div>
@@ -168,16 +144,33 @@
             <span id="status-context">0 tok</span>
             <span class="status-dot">·</span>
             <span id="status-cache">缓存命中 —</span>
+            <span class="status-ring" id="status-ring" aria-hidden="true"></span>
+            <span id="status-ring-pct">0%</span>
           </button>
         </div>
-        <div id="usage-pop" class="popover from-status" role="dialog" aria-label="Token 用量" hidden>
-          <div class="pop-head">
-            <span>Token 用量</span>
-            <span class="mini-badge" id="up-precision">—</span>
+        <div id="usage-pop" class="popover from-status" role="dialog" aria-label="上下文用量" hidden>
+          <div class="pop-head up-head">
+            <span>上下文已用 <b id="up-context-pct">0%</b></span>
+            <b class="up-total" id="up-context">~0 / 1M</b>
           </div>
-          <div class="up-row"><span>当前上下文</span><b id="up-context">0 / 1,000,000</b></div>
-          <div class="up-bar"><span id="up-fill"></span></div>
-          <div class="up-row"><span>占上下文比例</span><b id="up-context-pct">0%</b></div>
+          <div class="up-bar up-stack" id="up-bar">
+            <span class="up-seg up-seg-system" id="up-seg-system"></span>
+            <span class="up-seg up-seg-text" id="up-seg-text"></span>
+            <span class="up-seg up-seg-image" id="up-seg-image"></span>
+            <span class="up-seg up-seg-msg" id="up-seg-msg"></span>
+          </div>
+          <div class="up-items">
+            <div class="up-item" title="system prompt；知识库模式含检索到的参考资料"><i class="up-dot dot-system"></i><span>系统提示词</span><b id="up-system">~0</b></div>
+            <div class="up-item" title="上传的文本附件全文（已注入上下文的部分）"><i class="up-dot dot-text"></i><span>文本提示词</span><b id="up-text">~0</b></div>
+            <div class="up-item" id="up-image-row" title="当前用户消息中的图片，按尺寸估算视觉 token" hidden><i class="up-dot dot-image"></i><span>图片</span><b id="up-image">~0</b></div>
+            <div class="up-item" title="用户输入文字、助手回复、压缩摘要（模型实际看到的历史）"><i class="up-dot dot-msg"></i><span>对话消息</span><b id="up-msg">~0</b></div>
+          </div>
+          <div class="up-sep"></div>
+          <div class="up-compact-row">
+            <span class="up-compact-note" id="up-compact-note">上下文超过阈值时自动压缩较早消息</span>
+            <button type="button" class="up-compact-btn" id="up-compact-btn">压缩对话</button>
+          </div>
+          <div class="up-compact-info" id="up-compact-info" hidden></div>
           <div class="up-sep"></div>
           <div class="up-row"><span>本会话累计</span><b id="up-conv">0 tokens</b></div>
           <div class="up-grid">
@@ -191,7 +184,10 @@
             <div><span>缓存读取</span><b id="up-cache-hit">—</b></div>
           </div>
           <div class="up-sep"></div>
-          <p class="up-note" id="up-note">输入 = 每轮请求的 prompt（含历史与附件），逐轮累加；输出 = 每次回复。计数由 DeepSeek 分词器精确统计。</p>
+          <div class="up-note-line">
+            <span class="mini-badge" id="up-precision">—</span>
+            <p class="up-note" id="up-note">文本提示词 = 上传的文本附件全文；图片按尺寸估算视觉 token。下方输入/输出为本会话逐轮累加。</p>
+          </div>
         </div>
 
       </div>
@@ -222,25 +218,18 @@
         <button class="icon-btn" data-close="settings-modal" aria-label="关闭"></button>
       </div>
       <div class="settings-body">
-        <section class="settings-sec">
-          <h2>接口</h2>
-          <div class="form-item">
-            <label for="set-baseurl">Base URL</label>
-            <input type="text" id="set-baseurl" class="input" placeholder="https://api.example.com/v1" autocomplete="off">
-          </div>
-          <div class="form-item">
-            <label for="set-apikey">API Key</label>
-            <div class="input-affix">
-              <input type="password" id="set-apikey" class="input" placeholder="留空则不修改" autocomplete="new-password">
-              <button type="button" id="btn-key-toggle" class="icon-btn input-affix-btn" title="显示/隐藏" aria-label="显示或隐藏 API Key"></button>
+        <section class="settings-sec settings-sec-models">
+          <div class="settings-sec-head">
+            <div>
+              <h2>模型</h2>
+              <p class="settings-desc">填入各提供商的 API 密钥即可使用其模型。</p>
             </div>
           </div>
-          <div class="form-item">
-            <label for="set-model">模型</label>
-            <input type="text" id="set-model" class="input" list="model-options" placeholder="输入模型名称，例如 deepseek-flash" autocomplete="off">
-            <datalist id="model-options"></datalist>
-            <p class="form-hint">可直接输入其他 OpenAI 兼容模型名称；deepseek-flash 为建议值。</p>
-          </div>
+          <div id="provider-list" class="provider-list"></div>
+          <button id="btn-add-provider" class="provider-add" type="button">
+            <span class="provider-add-ico" id="provider-add-ico"></span>
+            <span>添加模型提供商</span>
+          </button>
         </section>
 
         <section class="settings-sec">
@@ -266,6 +255,57 @@
       <div class="modal-footer">
         <button class="btn btn-ghost" id="btn-settings-cancel">取消</button>
         <button class="btn btn-primary" id="btn-settings-save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 模型提供商编辑 ================= -->
+  <div class="modal-mask" id="provider-modal" hidden>
+    <div class="modal modal-provider" role="dialog" aria-modal="true" aria-labelledby="provider-modal-title">
+      <div class="modal-head">
+        <div>
+          <h1 class="modal-title" id="provider-modal-title">添加模型提供商</h1>
+          <p class="modal-sub">连接中转站、自部署服务或其他兼容 OpenAI Chat Completions 的接口。</p>
+        </div>
+        <button class="icon-btn" data-close="provider-modal" aria-label="关闭"></button>
+      </div>
+      <div class="provider-form">
+        <div class="form-item">
+          <label for="prov-name">显示名称</label>
+          <input type="text" id="prov-name" class="input" placeholder="例如 DeepSeek" autocomplete="off">
+        </div>
+        <div class="form-item">
+          <label for="prov-baseurl">API 地址</label>
+          <input type="text" id="prov-baseurl" class="input" placeholder="https://api.deepseek.com/v1" autocomplete="off">
+          <p class="form-hint">兼容 OpenAI 的 /chat/completions 接口地址，通常以 /v1 结尾。</p>
+        </div>
+        <div class="form-item">
+          <label>API 协议</label>
+          <div class="provider-protocol">OpenAI Chat Completions</div>
+        </div>
+        <div class="form-item">
+          <label for="prov-apikey">API 密钥</label>
+          <div class="input-affix">
+            <input type="password" id="prov-apikey" class="input" placeholder="输入 API 密钥" autocomplete="new-password">
+            <button type="button" id="btn-provider-key-toggle" class="icon-btn input-affix-btn" title="显示/隐藏" aria-label="显示或隐藏 API 密钥"></button>
+          </div>
+          <p class="form-hint" id="prov-key-hint">留空表示不修改已保存的密钥。</p>
+        </div>
+        <div class="form-item">
+          <div class="provider-models-head">
+            <label>模型目录</label>
+            <button type="button" class="link-btn" id="btn-fetch-models">获取可用模型</button>
+          </div>
+          <div id="prov-models" class="provider-models"></div>
+          <button type="button" class="btn btn-secondary btn-sm provider-add-model" id="btn-add-model">
+            <span id="provider-add-model-ico"></span><span>添加模型</span>
+          </button>
+          <p class="form-hint">目录外 ID 仍可在顶栏「自定义模型…」中直接输入发送。</p>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="btn-provider-cancel">取消</button>
+        <button class="btn btn-primary" id="btn-provider-save">保存</button>
       </div>
     </div>
   </div>
@@ -306,7 +346,7 @@
         <div class="finder-title-actions">
           <button id="finder-new-folder" class="icon-btn" title="新建文件夹" aria-label="新建文件夹"></button>
           <button id="finder-refresh" class="icon-btn" title="刷新" aria-label="刷新"></button>
-          <button id="finder-import" class="btn btn-ghost btn-xs" title="导入文件或文件夹">导入</button>
+          <button id="finder-import" class="btn btn-ghost btn-xs" title="添加文件或文件夹">添加</button>
         </div>
       </div>
 
@@ -354,7 +394,7 @@
       <div id="finder-drop" class="finder-drop" hidden>
         <div class="finder-drop-card">
           <span id="finder-drop-ico"></span>
-          <b>松开即可导入</b>
+          <b>松开即可添加</b>
           <small>文件与文件夹都会保留目录结构</small>
         </div>
       </div>
@@ -394,7 +434,6 @@
   <input type="file" id="chat-attach-input" multiple hidden accept=".txt,.md,.csv,.pdf,.docx,.xlsx,image/*">
   <input type="file" id="chat-folder-input" webkitdirectory multiple hidden>
   <input type="file" id="edit-attach-input" multiple hidden accept=".txt,.md,.csv,.pdf,.docx,.xlsx,image/*">
-  <input type="file" id="file-import-input" accept=".json,application/json" hidden>
 
   <script type="module" src="./app.js"></script>
 </body>

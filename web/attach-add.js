@@ -4,7 +4,8 @@
  */
 import { api } from './api.js';
 import {
-  TEXT_EXTS, extOf, isImageFile, makeImageVariants, readAsDataUrl, uid,
+  TEXT_EXTS, extOf, isImageFile, makeImageVariants, estimateImageTokens,
+  readAsDataUrl, uid,
 } from './util.js';
 
 const MAX_TEXT_BYTES = 20 * 1024 * 1024;
@@ -29,14 +30,16 @@ export async function prepareAttachment(file, id = uid('att')) {
     const dataUrl = await readAsDataUrl(file);
     let thumb = null;
     let preview = null;
+    let tokens = 255;
     try {
       const variants = await makeImageVariants(dataUrl);
       thumb = variants.thumb;
       preview = variants.preview;
-    } catch { /* 缩略图/预览图失败不阻塞发送 */ }
+      tokens = estimateImageTokens(variants.width, variants.height);
+    } catch { /* 缩略图/预览图失败不阻塞发送，token 用保守默认值 */ }
     return {
       id, name: file.name, kind: 'image', ext: extOf(file.name),
-      size: file.size, tokens: null, dataUrl, thumb, preview,
+      size: file.size, tokens, dataUrl, thumb, preview,
       status: 'ready',
     };
   }

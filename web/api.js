@@ -37,6 +37,13 @@ export const api = {
   putSettings: (payload) => request('/api/settings', { method: 'PUT', body: payload }),
   getModels: () => request('/api/models'),
 
+  getProviders: () => request('/api/providers'),
+  createProvider: (payload) => request('/api/providers', { method: 'POST', body: payload }),
+  updateProvider: (id, payload) => request(`/api/providers/${id}`, { method: 'PUT', body: payload }),
+  deleteProvider: (id) => request(`/api/providers/${id}`, { method: 'DELETE' }),
+  fetchProviderModels: (id) => request(`/api/providers/${id}/models`, { method: 'POST' }),
+  fetchModelsByConfig: (payload) => request('/api/providers/fetch-models', { method: 'POST', body: payload }),
+
   getUsage: (conversationId) => request('/api/usage' +
     (conversationId ? `?conversationId=${encodeURIComponent(conversationId)}` : '')),
 
@@ -82,11 +89,5 @@ export const api = {
   search: (q) => request(`/api/search?q=${encodeURIComponent(q)}&limit=80`),
   snapshotTurn: (convId, turnIndex) => request(`/api/conversations/${convId}/turns/${turnIndex}/snapshot`, { method: 'POST' }),
   activateTurnVersion: (convId, turnIndex, version) => request(`/api/conversations/${convId}/turns/${turnIndex}/activate`, { method: 'POST', body: { version } }),
-
-  exportUrl: '/api/export',
-  importFile: (file) => {
-    const fd = new FormData();
-    fd.append('file', file);
-    return request('/api/import', { method: 'POST', formData: fd });
-  },
+  compactConversation: (convId) => request(`/api/conversations/${convId}/compact`, { method: 'POST' }),
 };

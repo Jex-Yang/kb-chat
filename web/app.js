@@ -66,6 +66,8 @@ async function loadBootSettings() {
     const s = await api.getSettings();
     state.settings = s;
     state.model = s.model || state.model;
+    if (s.providerId != null) state.providerId = Number(s.providerId);
+    if (Array.isArray(s.providers)) state.modelProviders = s.providers;
     state.tokenizer = s.tokenizer || state.tokenizer;
     if (s.depth) setDepth(s.depth, { persist: false });
     if (Array.isArray(s.models) && s.models.length) state.models = s.models;

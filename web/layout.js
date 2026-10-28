@@ -6,10 +6,8 @@ import { state, LS_KEYS } from './state.js';
 import { clamp } from './util.js';
 
 const NARROW = '(max-width: 960px)';
-const MIN_SIDEBAR = 260;
-const MAX_SIDEBAR = 420;
-const MIN_KB_RATIO = 0.18;
-const MAX_KB_RATIO = 0.66;
+const MIN_SIDEBAR = 264;
+const MAX_SIDEBAR = 380;
 
 function isNarrow() {
   return window.matchMedia(NARROW).matches;
@@ -30,20 +28,12 @@ export function applySidebarWidth(width) {
   document.documentElement.style.setProperty('--sidebar-w', `${Math.round(w)}px`);
 }
 
-export function applyKbRatio(ratio) {
-  if (!Number.isFinite(ratio) || ratio <= 0) return;
-  const r = clamp(ratio, MIN_KB_RATIO, MAX_KB_RATIO);
-  document.documentElement.style.setProperty('--kb-h', `${(r * 100).toFixed(2)}%`);
-}
-
 export function resetLayout() {
   try {
     localStorage.removeItem(LS_KEYS.sidebarWidth);
-    localStorage.removeItem(LS_KEYS.kbRatio);
     localStorage.removeItem(LS_KEYS.sidebarCollapsed);
   } catch { /* ignore */ }
   document.documentElement.style.removeProperty('--sidebar-w');
-  document.documentElement.style.removeProperty('--kb-h');
   document.body.classList.remove('sidebar-collapsed', 'sidebar-open');
   state.sidebarOpen = true;
   document.getElementById('sidebar-mask').hidden = true;
@@ -123,48 +113,6 @@ function bindSidebarResizer() {
   });
 }
 
-function bindKbSplitter() {
-  const handle = document.getElementById('sb-splitter');
-  const sidebar = document.getElementById('sidebar');
-  if (!handle || !sidebar) return;
-  let dragging = false;
-  const onDown = (e) => {
-    if (isNarrow()) return;
-    dragging = true;
-    handle.classList.add('dragging');
-    document.body.classList.add('resizing');
-    handle.setPointerCapture?.(e.pointerId);
-    e.preventDefault();
-  };
-  const onMove = (e) => {
-    if (!dragging) return;
-    const rect = sidebar.getBoundingClientRect();
-    if (rect.height <= 0) return;
-    const ratio = clamp((e.clientY - rect.top) / rect.height, MIN_KB_RATIO, MAX_KB_RATIO);
-    applyKbRatio(ratio);
-  };
-  const onUp = (e) => {
-    if (!dragging) return;
-    dragging = false;
-    handle.classList.remove('dragging');
-    document.body.classList.remove('resizing');
-    try { handle.releasePointerCapture?.(e.pointerId); } catch { /* ignore */ }
-    const raw = getComputedStyle(document.documentElement).getPropertyValue('--kb-h');
-    const ratio = parseFloat(raw) / 100;
-    if (Number.isFinite(ratio)) {
-      try { localStorage.setItem(LS_KEYS.kbRatio, ratio.toFixed(4)); } catch { /* ignore */ }
-    }
-  };
-  handle.addEventListener('pointerdown', onDown);
-  window.addEventListener('pointermove', onMove);
-  window.addEventListener('pointerup', onUp);
-  window.addEventListener('pointercancel', onUp);
-  handle.addEventListener('dblclick', () => {
-    document.documentElement.style.removeProperty('--kb-h');
-    try { localStorage.removeItem(LS_KEYS.kbRatio); } catch { /* ignore */ }
-  });
-}
-
 /* ---------- 快捷键 ---------- */
 function bindShortcuts() {
   document.addEventListener('keydown', (e) => {
@@ -186,8 +134,6 @@ export function initLayout() {
   // 读取持久化布局
   const savedWidth = readNumber(LS_KEYS.sidebarWidth, 0);
   if (savedWidth) applySidebarWidth(savedWidth);
-  const savedRatio = readNumber(LS_KEYS.kbRatio, 0);
-  if (savedRatio) applyKbRatio(savedRatio);
 
   document.getElementById('btn-hamburger').addEventListener('click', toggleSidebar);
   document.getElementById('btn-collapse-sidebar').addEventListener('click', toggleSidebar);
@@ -201,7 +147,6 @@ export function initLayout() {
   syncSidebarState();
 
   bindSidebarResizer();
-  bindKbSplitter();
   bindShortcuts();
 
   const mq = window.matchMedia(NARROW);

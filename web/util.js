@@ -30,6 +30,20 @@ export function fmtTokens(n) {
   return `${fmtInt(n)} tokens`;
 }
 
+/** 紧凑 token 数：1,400 → 1.4K；42,300 → 42.3K；1,000,000 → 1M */
+export function fmtCompact(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return '0';
+  const trim = (s) => s.replace(/\.0$/, '');
+  if (v >= 999_500) {
+    return trim((v / 1_000_000).toFixed(v >= 10_000_000 ? 0 : 1)) + 'M';
+  }
+  if (v >= 1_000) {
+    return trim((v / 1_000).toFixed(v >= 100_000 ? 0 : 1)) + 'K';
+  }
+  return String(Math.round(v));
+}
+
 export function fmtBytes(bytes) {
   const n = Number(bytes);
   if (!Number.isFinite(n) || n <= 0) return '0 B';
@@ -426,11 +440,25 @@ function drawVariant(img, maxSize, quality) {
   return canvas.toDataURL('image/jpeg', quality);
 }
 
+/** 视觉模型按尺寸分块计费；这里用 OpenAI 兼容的 85 + 170×tiles 估算。 */
+export function estimateImageTokens(width, height) {
+  const w = Number(width) || 0;
+  const h = Number(height) || 0;
+  if (w <= 0 || h <= 0) return 255;
+  const scale = Math.min(1, 2048 / Math.max(w, h), 768 / Math.min(w, h));
+  const tw = Math.max(1, w * scale);
+  const th = Math.max(1, h * scale);
+  const tiles = Math.max(1, Math.ceil(tw / 512) * Math.ceil(th / 512));
+  return 85 + 170 * tiles;
+}
+
 /** 一次解码同时生成 240px 卡片缩略图和 1400px 历史预览图，避免重复读图/解码。 */
 export async function makeImageVariants(dataUrl) {
   const img = await loadImage(dataUrl);
   return {
     thumb: drawVariant(img, 240, 0.72),
     preview: drawVariant(img, 1400, 0.8),
+    width: img.naturalWidth || img.width || 0,
+    height: img.naturalHeight || img.height || 0,
   };
 }

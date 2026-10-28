@@ -39,6 +39,10 @@ function textTokensOf(list) {
 function remainingContext() {
   const quota = Number(state.usage.quota) || 0;
   if (!quota) return Infinity;
+  // 用下一轮请求的精确估算，而不是上一次上游返回的 usage：
+  // 手动压缩后上下文会立即下降，输入框不能还停留在「已满」。
+  const estimated = Number(state.usage.estimated) || 0;
+  if (estimated > 0) return Math.max(0, quota - estimated);
   return Math.max(0, quota - (Number(state.usage.used) || 0));
 }
 
@@ -101,9 +105,11 @@ function updateAttachSummary() {
 }
 
 function placeholderText() {
+  if (state.compacting) return '正在压缩上下文，请稍候…';
   if (state.quotaFull) return '上下文已达上限，请在设置中调大上限或新建对话';
-  if (state.convMode === 'kb') return '向知识库提问，自动检索相关资料后回答';
-  return '给 DeepSeek 发送消息（也可以只发附件）';
+  const narrow = window.matchMedia('(max-width: 520px)').matches;
+  if (state.convMode === 'kb') return narrow ? '向知识库提问' : '向知识库提问，自动检索相关资料后回答';
+  return narrow ? '发送消息' : '发送消息（也可以只发附件）';
 }
 
 function updateSendState() {
@@ -131,8 +137,10 @@ function updateSendState() {
     btn.disabled = false;
     return;
   }
-  btn.disabled = !has || state.quotaFull || overflow;
-  btn.title = btn.disabled ? (overflow ? '附件超出剩余上下文' : '发送') : '发送';
+  btn.disabled = !has || state.quotaFull || state.compacting || overflow;
+  btn.title = btn.disabled
+    ? (state.compacting ? '正在压缩上下文' : (overflow ? '附件超出剩余上下文' : '发送'))
+    : '发送';
 }
 
 /* ---------- 添加附件 ---------- */
@@ -225,6 +233,7 @@ function doSend() {
   const ta = $('chat-input');
   const text = ta.value.trim();
   if (!text && !state.attachments.length) return;
+  if (state.compacting) { toast('正在压缩上下文，请稍候…', 'info'); return; }
   if (state.quotaFull) { toast('上下文已达上限', 'error'); return; }
   if (overflow) { toast('附件超出剩余上下文，请减少附件', 'error'); return; }
   ta.value = '';
@@ -322,7 +331,7 @@ export function initInput() {
   ta.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
-      if (state.sending) return;
+      if (state.sending || state.compacting) return;
       doSend();
     }
   });
@@ -380,6 +389,7 @@ export function initInput() {
     renderMode();
   });
   document.addEventListener('chat-sending-change', updateSendState);
+  document.addEventListener('compact-state', updateSendState);
   document.addEventListener('quota-change', updateSendState);
   document.addEventListener('usage-change', updateAttachSummary);
 
