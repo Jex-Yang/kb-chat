@@ -249,7 +249,7 @@ function renderUsage() {
   set('up-context', `~${fmtCompact(estimated)} / ${fmtCompact(quota)}`);
   set('up-context-pct', `${Math.round(pct * 100)}%`);
 
-  // 构成条：系统提示词 / 文本提示词 / 图片 / 对话消息
+  // 构成条：系统提示词 / 上传文本占用 / 图片 / 对话消息
   const total = Math.max(1, estimated);
   const seg = (id, value) => {
     const el = document.getElementById(id);
@@ -321,7 +321,7 @@ function renderUsage() {
   const statusTokens = document.getElementById('status-tokens');
   if (statusTokens) {
     statusTokens.title = `上下文 ~${fmtInt(estimated)} / ${fmtInt(quota)} tokens（上次上游实测 ${fmtInt(used)}）\n` +
-      `系统提示词 ${fmtInt(b.systemTokens || 0)} · 文本提示词 ${fmtInt(b.textTokens || 0)} · ` +
+      `系统提示词 ${fmtInt(b.systemTokens || 0)} · 上传文本占用 ${fmtInt(b.textTokens || 0)} · ` +
       `图片 ${fmtInt(b.imageTokens || 0)} · 对话消息 ${fmtInt(b.messageTokens || 0)}\n` +
       `缓存命中 ${cacheRate == null ? '暂无数据' : fmtPct(cacheRate)}\n` +
       `未缓存输入 ${cacheKnown ? fmtInt(miss) : '—'} tok · 缓存读取 ${cacheKnown ? fmtInt(hit) : '—'} tok · 输出 ${fmtInt(Number(cu.completionTokens) || 0)} tok`;
@@ -337,8 +337,8 @@ function renderUsage() {
   const upNote = document.getElementById('up-note');
   if (upNote) {
     upNote.textContent = state.tokenizer === 'exact'
-      ? '文本提示词 = 上传的文本附件全文；图片按尺寸估算视觉 token。下方输入/输出为本会话逐轮累加。'
-      : '文本提示词 = 上传的文本附件全文；图片按尺寸估算视觉 token。当前未加载分词器，数值为字符数估算。';
+      ? '上传文本占用 = 上传的文本附件全文 token；图片按尺寸估算视觉 token。下方输入/输出为本会话逐轮累加。'
+      : '上传文本占用 = 上传的文本附件全文 token；图片按尺寸估算视觉 token。当前未加载分词器，数值为字符数估算。';
   }
 }
 

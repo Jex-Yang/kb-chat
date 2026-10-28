@@ -54,7 +54,7 @@ kb-chat/
 | 1 | GET /api/health | - | `{ok:true}` |
 | 2 | GET /api/settings | - | `{baseUrl, apiKeyMasked, model, providerId, providerName, providers:[{id,name,baseUrl,apiKeyMasked,hasKey,models,active}], quota, depth, models:[...]}`；`baseUrl/apiKeyMasked/model` 为当前提供商 |
 | 3 | PUT /api/settings | `{baseUrl?, apiKey?(空串=不改), providerId?, model?, quota?, depth?}` | 同 2；`providerId` 切换当前提供商，未给 `model` 时取该提供商首个模型 |
-| 4 | GET /api/usage | `?conversationId=` | `{quota, used, remaining, ratio, estimated, estimateRatio, estimatedRemaining, breakdown:{systemTokens,textTokens,imageTokens,messageTokens,estimatedTokens,compactedTokens}, compaction, compactionPolicy, conversation, ...}`；`used` 为上游实测，`estimated` 为下一轮请求精确分词估算；`textTokens` 只统计上传的文本附件，`imageTokens` 按当前用户消息图片尺寸估算视觉 token，用户输入与助手回复计入 `messageTokens` |
+| 4 | GET /api/usage | `?conversationId=` | `{quota, used, remaining, ratio, estimated, estimateRatio, estimatedRemaining, breakdown:{systemTokens,textTokens,imageTokens,messageTokens,estimatedTokens,compactedTokens}, compaction, compactionPolicy, conversation, ...}`；`used` 为上游实测，`estimated` 为下一轮请求精确分词估算；`textTokens` 为上传文本占用（只统计上传的文本附件全文），`imageTokens` 按当前用户消息图片尺寸估算视觉 token，用户输入与助手回复计入 `messageTokens` |
 | 5 | GET /api/tree | - | `{folders:[{id,name,parentId}], files:[{id,folderId,name,ext,size,chunkCount,createdAt}]}` |
 | 6 | POST /api/folders | `{name, parentId:null}` | `{id}` |
 | 7 | PUT /api/folders/{id} | `{name?, parentId?}` | `{ok:true}` |
