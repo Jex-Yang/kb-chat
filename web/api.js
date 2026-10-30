@@ -19,6 +19,11 @@ async function request(path, { method = 'GET', body, formData, signal } = {}) {
     if (e && e.name === 'AbortError') throw e;
     throw new Error('网络请求失败，请确认服务已启动');
   }
+  // 会话过期：回到登录页（登录页本身不经过这里）
+  if (res.status === 401) {
+    location.replace('/login.html');
+    throw new Error('登录已过期，请重新登录');
+  }
   if (!res.ok) {
     let detail = `请求失败（HTTP ${res.status}）`;
     try {
@@ -32,6 +37,9 @@ async function request(path, { method = 'GET', body, formData, signal } = {}) {
 
 export const api = {
   health: () => request('/api/health'),
+
+  authStatus: () => request('/api/auth/status'),
+  logout: () => request('/api/auth/logout', { method: 'POST' }),
 
   getSettings: () => request('/api/settings'),
   putSettings: (payload) => request('/api/settings', { method: 'PUT', body: payload }),

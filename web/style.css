@@ -845,6 +845,8 @@ select.input option { background: var(--bg-elev); }
   flex: 0 0 auto;
 }
 .modal-actions { display: flex; gap: 8px; }
+#btn-logout { margin-right: auto; color: var(--text-3); }
+#btn-logout:hover:not(:disabled) { color: var(--danger); }
 .confirm-text { padding: 0 20px 4px; font-size: 13px; line-height: 21px; color: var(--text-2); }
 
 .settings-body { padding: 0 20px 2px; overflow-y: auto; }

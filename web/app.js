@@ -76,6 +76,29 @@ async function loadBootSettings() {
   }
 }
 
+async function initAuth() {
+  const btn = document.getElementById('btn-logout');
+  try {
+    const s = await api.authStatus();
+    if (!s.enabled) {
+      btn?.remove();
+      return;
+    }
+    if (!btn) return;
+    btn.hidden = false;
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        await api.logout();
+      } catch { /* 已经过期也照样回登录页 */ }
+      location.replace('/login.html');
+    });
+  } catch {
+    // 老版本 / 未开启密码：不展示退出入口
+    btn?.remove();
+  }
+}
+
 async function bootstrap() {
   // 1. 组件初始化（事件绑定；layout 先读取持久化布局）
   initLayout();
@@ -96,8 +119,12 @@ async function bootstrap() {
   try {
     await api.health();
   } catch (e) {
-    toast('后端服务未就绪：' + e.message, 'error', 5000);
+    // 401 已由 api.js 跳转登录页，这里不用再提示
+    if (!location.pathname.startsWith('/login')) {
+      toast('后端服务未就绪：' + e.message, 'error', 5000);
+    }
   }
+  await initAuth();
 
   // 3. 设置 / 模型 / 用量 / 目录树 / 对话列表
   await loadBootSettings();

@@ -838,6 +838,10 @@ async function sendStream(text, { attachments = [], displayText = text, anchor =
         attachments: attachmentPayload(attachments, state.convMode),
       }),
     });
+    if (res.status === 401) {
+      location.replace('/login.html');
+      throw new Error('登录已过期，请重新登录');
+    }
     if (!res.ok) {
       let detail = `HTTP ${res.status}`;
       try {

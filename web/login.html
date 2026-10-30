@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#151617">
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <title>登录 · KBChat</title>
+  <link rel="stylesheet" href="./login.css">
+</head>
+<body>
+  <main class="login-wrap">
+    <form class="login-card" id="login-form" novalidate>
+      <div class="brand">
+        <div class="brand-mark">K</div>
+        <div class="brand-text"><b>KBChat</b><span>知识库助手</span></div>
+      </div>
+
+      <h1 class="title">访问验证</h1>
+      <p class="sub">此实例已开启访问密码，请输入后继续。</p>
+
+      <label class="field" for="password">
+        <span class="field-label">密码</span>
+        <span class="input-wrap">
+          <input id="password" name="password" type="password" class="input"
+                 autocomplete="current-password" placeholder="请输入访问密码"
+                 maxlength="256" autofocus required>
+          <button type="button" class="eye" id="toggle-pw" aria-pressed="false">显示</button>
+        </span>
+      </label>
+
+      <p class="err" id="err" role="alert" aria-live="polite"></p>
+
+      <button class="submit" id="btn-submit" type="submit">登录</button>
+
+      <p class="foot">密码仅在本机服务端校验，仓库中只保存哈希。</p>
+    </form>
+  </main>
+  <script type="module" src="./login.js"></script>
+</body>
+</html>

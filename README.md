@@ -15,6 +15,40 @@ bash start.sh
 - `.env` 仍可作为首次运行的默认值（`API_BASE_URL`、`API_KEY`、`DEFAULT_MODEL`、`TOKEN_QUOTA`、`DEFAULT_DEPTH`）；首次启动会把旧接口迁移到匹配的提供商，之后以页面设置为准。
 - 数据默认在 `data/kb.db`，原始上传文件在 `data/uploads/`。
 
+## 访问密码（可选）
+
+单用户登录保护：未登录时只能看到登录页，所有 `/api/*` 返回 401，静态页面重定向回登录页。
+
+```bash
+# 生成哈希（交互输入，密码不会进 shell 历史）
+./.venv/bin/python -m server.auth hash
+# 把输出的 WEB_PASSWORD_HASH=... 写进 .env，然后重启 start.sh
+```
+
+- 密码只以 PBKDF2-SHA256 哈希形式保存在 `.env`；`.env` 已被 `.gitignore` 排除，**不会**进入仓库。
+- 会话用 HttpOnly + SameSite=Strict Cookie，默认 7 天滑动续期；会话存在进程内存里，重启服务需重新登录。
+- 同一 IP 连续失败 8 次锁定 15 分钟；登录接口对失败有固定延迟。
+- 未配置 `WEB_PASSWORD_HASH`（也没有 `WEB_PASSWORD`）时登录保护关闭，方便本地开发。
+- 设置弹窗左下角提供「退出登录」。
+- 注意：这是「防陌生人随手访问」级别的保护，不是多用户权限系统；Cookie 走 HTTP 时（局域网 IP 访问）不加密，公网部署请务必套 HTTPS 反向代理。
+
+### 推到 GitHub 前
+
+- `.gitignore` 已排除 `.env`、`.env.*`、`data/`、`*.db`：访问密码与 API Key 都不会进仓库。
+- 仓库自带 pre-commit 钩子，检测到 `.env`、真实密码哈希或 `sk-` 密钥会直接阻止提交：
+
+  ```bash
+  git config core.hooksPath .githooks   # 每个克隆执行一次
+  ```
+
+- 推送前自查（应无输出）：
+
+  ```bash
+  git grep -nE 'pbkdf2_sha256[$]|sk-[A-Za-z0-9]{16,}'
+  ```
+
+- 如果曾经误把 `.env` 提交过，改密码并重写历史（`git filter-repo`）比删除文件更可靠。
+
 ## 功能
 
 - 界面：参考 DeepSeek Harness 的深色工作台。侧边栏 =「新对话 / 知识库 / 对话列表 / 设置 · 下载对话」，顶栏 = 模型、思考档位；没有工作区、没有归档，对话悬停即可置顶/重命名/删除。
@@ -59,4 +93,4 @@ docs/     架构/需求/运维文档
 - 消息正文的精确 token 数会落库缓存（`messages.content_tokens`），长会话估算上下文、压缩选区时不再反复分词；旧数据首次启动自动回填。
 - 下载的 TXT 只包含对话内容；模型提供商与 API Key 不参与下载。
 - 图片 token 由前端按图片尺寸估算（OpenAI 兼容的 85 + 170×tiles），上游实际计费仍以返回的 usage 为准。
-- 项目为本地单用户工具，默认绑定 `0.0.0.0:8321`，请勿直接暴露到公网。
+- 项目为本地单用户工具，默认绑定 `0.0.0.0:8321`，请勿直接暴露到公网；需要对外访问时先配置「访问密码」并套 HTTPS 反向代理。
