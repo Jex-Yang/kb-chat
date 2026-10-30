@@ -37,7 +37,7 @@
 | 变量名 | 默认值 | 说明 | 是否可页面覆盖 |
 |--------|--------|------|----------------|
 | API_BASE_URL | `https://token.sensenova.cn/v1` | 上游 LLM 的 OpenAI 兼容端点根地址，不含 /chat/completions | 可以（页面设置 → 服务地址） |
-| API_KEY | `sk-REVOKED`（当前 .env 实值；新环境填 `sk-your-key-here`） | 上游 API 密钥，后端只在内存中使用，接口输出时掩码为前 3 后 3 位 | 可以（页面设置 → API Key；留空表示不修改已有 Key） |
+| API_KEY | `sk-your-key-here`（真实密钥只写入本地 `.env` 或页面设置，禁止提交到仓库） | 上游 API 密钥，后端只在内存中使用，接口输出时掩码为前 3 后 3 位 | 可以（页面设置 → API Key；留空表示不修改已有 Key） |
 | DEFAULT_MODEL | `deepseek-flash` | 默认对话模型，默认建议值：`deepseek-flash`；设置中可输入其他模型名 | 可以（页面设置 → 模型，及对话框内模型下拉） |
 | TOKEN_QUOTA | `1000000` | Token 月度配额上限，用于 /api/usage 用量比例计算，单位：token | 可以（页面设置 → 配额） |
 | DEFAULT_DEPTH | `high` | 默认推理深度，可选值：`none`、`low`、`high`、`max` | 可以（对话框内深度选择） |

@@ -530,8 +530,25 @@ def delete_folder(folder_id: int) -> dict[str, bool]:
 
 
 # ---------- #9~11 files ----------
+def _safe_upload_name(raw: str | None) -> str:
+    """只保留文件名本身：去掉路径分隔符与控制字符，避免写出 uploads 目录。"""
+    base = str(raw or "").replace("\\", "/").rsplit("/", 1)[-1]
+    base = "".join(ch for ch in base if ch >= " " and ch != "\x7f").strip()
+    base = base.strip(".")
+    if not base:
+        base = "upload"
+    if len(base) > 200:
+        stem, dot, suffix = base.rpartition(".")
+        if dot and len(suffix) <= 16:
+            base = stem[:200 - len(suffix) - 1] + "." + suffix
+        else:
+            base = base[:200]
+    return base
+
+
 def _upload_common(file: UploadFile, folder_id: int | None) -> dict[str, Any]:
-    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    display_name = _safe_upload_name(file.filename)
+    ext = display_name.rsplit(".", 1)[-1].lower()
     parsers.check_ext(ext)
     data = file.file.read()
     if len(data) > MAX_UPLOAD_BYTES:
@@ -539,26 +556,19 @@ def _upload_common(file: UploadFile, folder_id: int | None) -> dict[str, Any]:
     text = parsers.parse(ext, data)
     token_count = tokens.count(text)
     pieces = chunker.chunk(text)
-    # 原文件落盘（供下载）；文件名冲突加序号
-    safe_name = file.filename
-    dest = config.UPLOAD_DIR / safe_name
-    i = 1
-    while dest.exists():
-        stem, dot, suffix = safe_name.rpartition(".")
-        base = stem or safe_name
-        suffix = ("." + suffix) if dot else ""
-        dest = config.UPLOAD_DIR / f"{base}-{i}{suffix}"
-        i += 1
+    # 原文件落盘（供下载）；文件名冲突加序号。全新安装时 uploads 目录可能还不存在
+    config.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    dest = _unique_upload_path(display_name)
     try:
         dest.write_bytes(data)
     except OSError:
         pass  # 落盘失败不阻塞入库，下载时会提示原文件不存在
     path = f"data/uploads/{dest.name}"
-    file_id = db.create_file(folder_id, file.filename, ext, len(data), path,
+    file_id = db.create_file(folder_id, display_name, ext, len(data), path,
                              text, len(pieces), token_count)
     chunk_ids = db.add_chunks(file_id, folder_id, pieces)
-    chunker.add_file(file_id, file.filename, chunk_ids, pieces)
-    return {"id": file_id, "name": file.filename, "chunkCount": len(pieces),
+    chunker.add_file(file_id, display_name, chunk_ids, pieces)
+    return {"id": file_id, "name": display_name, "chunkCount": len(pieces),
             "tokens": token_count, "estTokens": token_count}
 
 
@@ -569,7 +579,12 @@ def upload_file(
 ) -> dict[str, Any]:
     folder_id: int | None = None
     if folderId not in ("", "null", "None"):
-        folder_id = int(folderId)
+        try:
+            folder_id = int(folderId)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "folderId 必须是整数") from None
+        if not db.query("SELECT id FROM folders WHERE id=?", (folder_id,)):
+            raise HTTPException(404, f"目标目录不存在：{folder_id}")
     try:
         return _upload_common(file, folder_id)
     except ValueError as exc:
@@ -601,8 +616,12 @@ def preview_file(file_id: int) -> dict[str, Any]:
 @router.post("/files/parse")
 async def parse_file_only(file: UploadFile = File(...)) -> dict[str, Any]:
     """仅解析不入库（聊天模式附件）：返回文本与 token 估算，供前端随消息注入。"""
-    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
-    parsers.check_ext(ext)
+    display_name = _safe_upload_name(file.filename)
+    ext = display_name.rsplit(".", 1)[-1].lower()
+    try:
+        parsers.check_ext(ext)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     data = await file.read()
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(400, "文件超过 20MB")
@@ -614,14 +633,16 @@ async def parse_file_only(file: UploadFile = File(...)) -> dict[str, Any]:
     truncated = full_chars > CHAT_ATTACHMENT_MAX_CHARS
     if truncated:
         text = text[:CHAT_ATTACHMENT_MAX_CHARS] + "\n…（附件过长，已截断）"
-    return {"name": file.filename, "ext": ext, "chars": full_chars,
+    return {"name": display_name, "ext": ext, "chars": full_chars,
             "truncated": truncated, "tokens": tokens.count(text),
             "estTokens": tokens.count(text), "text": text}
 
 
 # ---------- 文件/文件夹：重命名 / 移动 / 复制（Finder 式管理） ----------
 def _clean_name(name: str) -> str:
-    return str(name or "").replace("/", " ").replace("\\", " ").strip()
+    text = str(name or "").replace("/", " ").replace("\\", " ")
+    text = "".join(ch for ch in text if ch >= " " and ch != "\x7f")
+    return text.strip()
 
 
 def _existing_names(table: str, parent_col: str, parent_id: int | None) -> set[str]:
@@ -1324,10 +1345,13 @@ async def chat(body: ChatReq) -> StreamingResponse:
                         "contextTokens": db.context_tokens(body.conversationId)})
             yield "data: [DONE]\n\n"
         except Exception as exc:  # 上游失败：发 error 事件，已生成部分落库
+            error_message_id = None
             if not finalized and (content_parts or reasoning_parts):
-                _persist()
+                error_message_id = _persist()
                 finalized = True
+            # messageId 让前端原地重试前先截断这条半成品回答，避免重复插入 user 消息
             yield _sse({"type": "error", "message": str(exc)[:500],
+                        "messageId": error_message_id,
                         "conversation": db.conversation_usage(body.conversationId)})
             yield "data: [DONE]\n\n"
         finally:

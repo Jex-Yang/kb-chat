@@ -879,7 +879,6 @@ async function sendStream(text, { attachments = [], displayText = text, anchor =
       }
       if (gotDone || hadError) break;
     }
-    if (hadError) showAiError(ai);
   } catch (e) {
     if (e && e.name === 'AbortError') {
       ai.elapsedMs = Date.now() - startedAt;
@@ -981,6 +980,7 @@ function handleEvent(evt, ai, renderThrottled, startedAt) {
       state.retryAttempt = 0;
       ai.retry.hidden = true;
       ai.elapsedMs = Date.now() - startedAt;
+      if (evt.messageId != null) ai.el.dataset.msgId = evt.messageId;
       if (evt.conversation) state.conversationUsage = evt.conversation;
       showAiError(ai, evt.message || '');
       break;
@@ -1077,6 +1077,17 @@ async function retryFailedInPlace(ai) {
   const display = turn?.displayText ?? (msg ? displayTextOf(msg) : '');
   const atts = turn?.attachments || [];
   if (!text && !atts.length) { toast('没有可重试的内容', 'error'); return; }
+
+  // 失败前已流式生成的部分回答可能已落库：先截断它，避免重试后留下重复的 user 消息
+  if (ai.el.dataset.msgId != null) {
+    try {
+      await api.truncateMessages(state.currentConvId, Number(ai.el.dataset.msgId));
+      const idx = state.currentMessages.findIndex(
+        (x) => String(x.id) === String(ai.el.dataset.msgId));
+      if (idx >= 0) state.currentMessages = state.currentMessages.slice(0, idx);
+    } catch (e) { toast('截断失败：' + e.message, 'error'); return; }
+  }
+
   ai.el.remove();
   await sendStream(text, {
     attachments: atts, displayText: display, anchor: userBlock,

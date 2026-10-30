@@ -57,6 +57,7 @@ async def stream_chat(
 
     attempt = 0
     while True:
+        produced = False  # 本次尝试是否已向上游输出内容；已输出后断流不能整体重试
         try:
             async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
                 async with client.stream("POST", url, headers=headers,
@@ -84,10 +85,13 @@ async def stream_chat(
 
                     # —— 200，流式解析 ——
                     async for event in _iter_sse(resp):
+                        produced = True
                         yield event
                     return
 
         except _RetryableError as exc:
+            if produced:
+                raise RuntimeError(f"上游流中断（已输出部分内容，不再重试）：{exc}") from exc
             attempt += 1
             if max_retries is not None and attempt > max_retries:
                 raise RuntimeError(f"上游重试 {max_retries} 次仍失败：{exc}") from exc
@@ -96,6 +100,9 @@ async def stream_chat(
             yield ("retry", attempt)
             await asyncio.sleep(delay)
         except (httpx.TimeoutException, httpx.TransportError) as exc:
+            if produced:
+                # 已经流式输出后再整体重试会造成前端/落库内容重复，直接交给上层报错
+                raise RuntimeError(f"上游连接中断（已输出部分内容，不再重试）：{exc}") from exc
             attempt += 1
             if max_retries is not None and attempt > max_retries:
                 raise RuntimeError(f"上游重试 {max_retries} 次仍失败：{exc}") from exc

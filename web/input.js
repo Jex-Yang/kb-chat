@@ -3,6 +3,7 @@
  *            聊天 / 知识库模式、Enter 发送、拖拽 / 粘贴 / 文件夹附件
  */
 import { state, MAX_ATTACHMENTS } from './state.js';
+import { api } from './api.js';
 import { icon } from './icons.js';
 import {
   fmtInt, toast, confirmDialog, extOf, isImageFile, TEXT_EXTS, uid,
@@ -131,15 +132,18 @@ function updateSendState() {
   }
 
   const has = !!(ta.value.trim() || state.attachments.length);
+  const parsing = state.attachments.some((a) => a.status === 'parsing');
   const clearBtn = $('btn-clear-draft');
   if (clearBtn) clearBtn.hidden = !has || state.sending;
   if (state.sending) {
     btn.disabled = false;
     return;
   }
-  btn.disabled = !has || state.quotaFull || state.compacting || overflow;
+  btn.disabled = !has || state.quotaFull || state.compacting || overflow || parsing;
   btn.title = btn.disabled
-    ? (state.compacting ? '正在压缩上下文' : (overflow ? '附件超出剩余上下文' : '发送'))
+    ? (state.compacting ? '正在压缩上下文'
+      : (parsing ? '附件解析中，请稍候'
+        : (overflow ? '附件超出剩余上下文' : '发送')))
     : '发送';
 }
 
@@ -234,6 +238,10 @@ function doSend() {
   const text = ta.value.trim();
   if (!text && !state.attachments.length) return;
   if (state.compacting) { toast('正在压缩上下文，请稍候…', 'info'); return; }
+  if (state.attachments.some((a) => a.status === 'parsing')) {
+    toast('附件还在解析中，请稍候', 'error');
+    return;
+  }
   if (state.quotaFull) { toast('上下文已达上限', 'error'); return; }
   if (overflow) { toast('附件超出剩余上下文，请减少附件', 'error'); return; }
   ta.value = '';

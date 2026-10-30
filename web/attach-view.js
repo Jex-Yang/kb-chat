@@ -3,7 +3,7 @@
  * 横向滑动 + 左右箭头 + 精确 token 数，不再用 ≈
  */
 import { icon, fileIcon } from './icons.js';
-import { fmtBytes, fmtInt, fmtTokens } from './util.js';
+import { fmtBytes, fmtTokens } from './util.js';
 
 export function attachmentCard(att, opts = {}) {
   const { compact = false, removable = false, onRemove = null, onPreview = null } = opts;
@@ -205,18 +205,4 @@ export function normalizeAttachmentMeta(att) {
     text: typeof att.text === 'string' ? att.text : null,
     status: 'ready',
   };
-}
-
-export function attachmentSummaryText(list) {
-  if (!list || !list.length) return '';
-  const images = list.filter((a) => a.kind === 'image').length;
-  const total = list.reduce((sum, a) => sum + (Number(a.tokens) || 0), 0);
-  const parts = [`附件 ${list.length}/50`];
-  if (total > 0) {
-    parts.push(images > 0
-      ? `约 ${fmtInt(total)} tokens（含图片）`
-      : `合计 ${fmtInt(total)} tokens`);
-  }
-  if (images > 0) parts.push(`${images} 张图片 token 按尺寸估算`);
-  return parts.join(' · ');
 }

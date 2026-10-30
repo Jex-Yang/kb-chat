@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import chunker, db
+from . import chunker, config, db
 from .api_routes import router
 
 logging.basicConfig(level=logging.INFO,
@@ -25,6 +25,7 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     db.init()
+    config.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     loaded = chunker.load_from_db(db)
     stats = chunker.stats()
     logger.info("KBChat 启动完成：索引加载 %d 个分块 / %d 个 term",

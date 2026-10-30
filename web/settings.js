@@ -306,10 +306,6 @@ export function initSettings() {
   document.getElementById('provider-modal')?.addEventListener('click', (e) => {
     if (e.target === e.currentTarget) closeProviderModal();
   });
-  document.getElementById('btn-key-toggle')?.addEventListener('click', () => {
-    const keyEl = document.getElementById('prov-apikey');
-    keyEl.type = keyEl.type === 'password' ? 'text' : 'password';
-  });
   document.getElementById('btn-provider-key-toggle')?.addEventListener('click', () => {
     const keyEl = document.getElementById('prov-apikey');
     keyEl.type = keyEl.type === 'password' ? 'text' : 'password';
