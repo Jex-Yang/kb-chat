@@ -1,4 +1,5 @@
 # KBChat 后端任务列表（契约源：ARCHITECTURE.md 冻结版）
+> 历史文档（2026-10-27 的任务/交付记录）。当前实现、部署与已知变更见 README.md 与 docs/ARCHITECTURE.md §0。
 
 负责工程师：全部 `backend-engineer-python`（Python 3.13 + FastAPI + uvicorn，stdlib sqlite3）
 实现顺序建议：BE-01 → (BE-02 ∥ BE-03) → BE-04 → BE-05 → (BE-06 ∥ BE-07) → BE-08；关键路径：BE-01→BE-05→BE-06→BE-08。

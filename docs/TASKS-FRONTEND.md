@@ -1,4 +1,5 @@
 # KBChat 前端任务列表
+> 历史文档（2026-10-27 的任务/交付记录）。当前实现、部署与已知变更见 README.md 与 docs/ARCHITECTURE.md §0。
 
 > 技术栈：零构建原生 JS SPA（web/index.html + web/app.js ES module + web/style.css），marked.min.js 已在 web/vendor/。契约源：ARCHITECTURE.md §4/§5；视觉源：UI-SPEC.md。负责 Agent ID：frontend-engineer-vue（全部任务）。
 

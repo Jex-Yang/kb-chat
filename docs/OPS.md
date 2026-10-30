@@ -1,5 +1,24 @@
 # KBChat 运维手册
 
+## 0. 当前部署形态（2026-10-30）
+
+- 生产实例：Debian 13，目录 `/home/jex/kb-chat`，systemd 单元 `kbchat`，监听 `0.0.0.0:8000`，`User=jex`。
+  - 状态 / 重启：`sudo systemctl status kbchat`、`sudo systemctl restart kbchat`
+  - 日志：`journalctl -u kbchat -f`
+- 首次部署需 `sudo apt install python3-venv`（Debian 默认没有 ensurepip，建不了 venv）。
+- **已开启访问密码**：除 `/api/auth/*` 与登录页外，所有 `/api/*` 都需要 `kbchat_session` Cookie。本文档后面的裸 `curl` 会返回 401，巡检前先登录：
+
+  ```bash
+  curl -s -c /tmp/kb.cookie -X POST http://127.0.0.1:8000/api/auth/login \
+       -H 'Content-Type: application/json' -d '{"password":"…"}'
+  curl -s -b /tmp/kb.cookie http://127.0.0.1:8000/api/health
+  ```
+
+- 本机开发仍可 `bash start.sh` 跑在 8321；服务器是 8000。
+- 会话保存在进程内存：重启服务后所有人需要重新登录。
+- 改完代码/换密码后必须 `systemctl restart kbchat` 才生效（uvicorn 未开 `--reload`）。
+
+
 > 版本：1.0 ｜ 维护人：常守恒（运维工程师） ｜ 适用环境：macOS / Linux 单机部署（uvicorn 前台进程）
 > 本手册假设读者未参与开发。`<ROOT>` 代指项目根目录：`/Users/jex/Desktop/Knowledge/kb-chat`。
 

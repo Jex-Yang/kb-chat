@@ -1,3 +1,4 @@
+> 历史文档（2026-10-27 的任务/交付记录）。当前实现、部署与已知变更见 README.md 与 docs/ARCHITECTURE.md §0。
 > 历史报告：部分接口/UI 已迭代（新增全文搜索、消息版本、纯文本导出等），最新说明见 README.md。
 
 # KBChat 后端自测报告（SELF-CHECK）

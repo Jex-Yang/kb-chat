@@ -205,6 +205,7 @@ export async function refreshUsage(convId = state.currentConvId) {
       },
       compaction: u.compaction || null,
       compactionPolicy: u.compactionPolicy || null,
+      turn: u.turn || null,
     };
     state.conversationUsage = u.conversation || {
       turns: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0,
@@ -234,10 +235,12 @@ export function setSpeed(tps, live = false) {
 }
 
 function renderUsage() {
-  const { quota, used, breakdown, compaction, compactionPolicy } = state.usage;
+  const { quota, breakdown, compaction, compactionPolicy } = state.usage;
   const estimated = Math.max(0, Number(state.usage.estimated) || 0);
+  const cu = state.conversationUsage || {};
   const pct = quota > 0 ? Math.min(1, estimated / quota) : 0;
 
+  // 自动压缩按「下一轮 prompt」判断
   const full = quota > 0 && estimated >= quota;
   if (full !== state.quotaFull) {
     state.quotaFull = full;
@@ -246,23 +249,14 @@ function renderUsage() {
   }
 
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  const pctText = (p) => (p > 0 && p < 0.01 ? `${(p * 100).toFixed(1)}%` : `${Math.round(p * 100)}%`);
   set('up-context', `~${fmtCompact(estimated)} / ${fmtCompact(quota)}`);
-  set('up-context-pct', `${Math.round(pct * 100)}%`);
+  set('up-context-pct', pctText(pct));
 
-  // 构成条：系统提示词 / 上传文本占用 / 图片 / 对话消息
-  const total = Math.max(1, estimated);
-  const seg = (id, value) => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    const n = Math.max(0, Number(value) || 0);
-    el.style.width = `${(n / total * 100).toFixed(2)}%`;
-    el.hidden = n <= 0;
-  };
+  // 进度条 = 已用 / 窗口上限（未用部分留空），和 DeepSeek 一样是单色填充
+  const fill = document.getElementById('up-fill');
+  if (fill) fill.style.width = `${(pct * 100).toFixed(2)}%`;
   const b = breakdown || {};
-  seg('up-seg-system', b.systemTokens);
-  seg('up-seg-text', b.textTokens);
-  seg('up-seg-image', b.imageTokens);
-  seg('up-seg-msg', b.messageTokens);
   set('up-system', `~${fmtCompact(b.systemTokens || 0)}`);
   set('up-text', `~${fmtCompact(b.textTokens || 0)}`);
   set('up-image', `~${fmtCompact(b.imageTokens || 0)}`);
@@ -295,11 +289,16 @@ function renderUsage() {
       : '上下文超过阈值时自动压缩较早消息';
   }
 
-  set('up-conv', fmtTokens(state.conversationUsage.totalTokens));
-  set('up-prompt', fmtInt(state.conversationUsage.promptTokens));
-  set('up-completion', fmtInt(state.conversationUsage.completionTokens));
+  set('up-conv', fmtTokens(cu.totalTokens));
+  set('up-prompt', fmtInt(cu.promptTokens));
+  set('up-completion', fmtInt(cu.completionTokens));
+  const reasoningEl = document.getElementById('up-reasoning');
+  if (reasoningEl) {
+    const rt = Number(cu.reasoningTokens) || 0;
+    reasoningEl.hidden = rt <= 0;
+    reasoningEl.textContent = `其中思考 ~${fmtCompact(rt)}`;
+  }
 
-  const cu = state.conversationUsage || {};
   const cacheKnown = !!cu.cacheKnown;
   const hit = Number(cu.cacheHitTokens) || 0;
   const miss = Number(cu.cacheMissTokens) || 0;
@@ -316,15 +315,14 @@ function renderUsage() {
   }
   const ring = document.getElementById('status-ring');
   if (ring) ring.style.setProperty('--pct', (pct * 100).toFixed(2));
-  set('status-ring-pct', `${Math.round(pct * 100)}%`);
+  set('status-ring-pct', pctText(pct));
 
   const statusTokens = document.getElementById('status-tokens');
   if (statusTokens) {
-    statusTokens.title = `上下文 ~${fmtInt(estimated)} / ${fmtInt(quota)} tokens（上次上游实测 ${fmtInt(used)}）\n` +
+    statusTokens.title = `上下文 ~${fmtInt(estimated)} / ${fmtInt(quota)} tokens\n` +
       `系统提示词 ${fmtInt(b.systemTokens || 0)} · 上传文本占用 ${fmtInt(b.textTokens || 0)} · ` +
       `图片 ${fmtInt(b.imageTokens || 0)} · 对话消息 ${fmtInt(b.messageTokens || 0)}\n` +
-      `缓存命中 ${cacheRate == null ? '暂无数据' : fmtPct(cacheRate)}\n` +
-      `未缓存输入 ${cacheKnown ? fmtInt(miss) : '—'} tok · 缓存读取 ${cacheKnown ? fmtInt(hit) : '—'} tok · 输出 ${fmtInt(Number(cu.completionTokens) || 0)} tok`;
+      `本会话累计 ${fmtInt(cu.totalTokens || 0)}（输入 ${fmtInt(cu.promptTokens || 0)} · 输出 ${fmtInt(cu.completionTokens || 0)}，其中思考 ${fmtInt(cu.reasoningTokens || 0)}）`;
   }
 
   const prec = document.getElementById('up-precision');
@@ -336,9 +334,7 @@ function renderUsage() {
   }
   const upNote = document.getElementById('up-note');
   if (upNote) {
-    upNote.textContent = state.tokenizer === 'exact'
-      ? '上传文本占用 = 上传的文本附件全文 token；图片按尺寸估算视觉 token。下方输入/输出为本会话逐轮累加。'
-      : '上传文本占用 = 上传的文本附件全文 token；图片按尺寸估算视觉 token。当前未加载分词器，数值为字符数估算。';
+    upNote.textContent = '上下文 = 下一轮要发的 prompt，压缩后自动变小；思考不进上下文，只计入本会话累计。';
   }
 }
 

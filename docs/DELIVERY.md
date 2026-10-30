@@ -1,4 +1,5 @@
 # KBChat 交付手册
+> 历史文档（2026-10-27 的任务/交付记录）。当前实现、部署与已知变更见 README.md 与 docs/ARCHITECTURE.md §0。
 
 > 版本：1.0 ｜ 维护人：常守恒（运维工程师） ｜ 适用环境：macOS / Linux 单机
 > 本手册假设读者未参与开发，所有命令可直接复制执行。项目根目录以 `<ROOT>` 代指：`/Users/jex/Desktop/Knowledge/kb-chat`（实际部署时替换为你的路径）。

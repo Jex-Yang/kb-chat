@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import uuid
 
 import httpx
 
-BASE = "http://127.0.0.1:8321"
+BASE = os.environ.get("KBC_BASE", "http://127.0.0.1:8321")
+PASSWORD = os.environ.get("KBC_PASSWORD", "")
 client = httpx.Client(base_url=BASE, trust_env=False, timeout=httpx.Timeout(600, connect=10))
+anon = httpx.Client(base_url=BASE, trust_env=False, timeout=httpx.Timeout(30, connect=10))
 
 RUN = uuid.uuid4().hex[:6]
 FOLDER_NAME = f"QA-TEST-目录-{RUN}"
@@ -36,6 +39,21 @@ def ev(resp=None, extra: str = "") -> str:
         s = f"HTTP {resp.status_code} {resp.text[:300]}"
     return (s + (" | " + extra if extra else "")).strip()
 
+
+# ---------- 鉴权（设置了 KBC_PASSWORD 才跑） ----------
+if PASSWORD:
+    _st = anon.get("/api/auth/status")
+    record("TC-A1", "鉴权", "未登录 status: enabled=true, authenticated=false",
+           _st.status_code == 200 and _st.json() == {"enabled": True, "authenticated": False}, ev(_st))
+    _tree401 = anon.get("/api/tree").status_code
+    record("TC-A2", "鉴权", "未登录访问 /api/tree → 401", _tree401 == 401, f"status={_tree401}")
+    _bad = anon.post("/api/auth/login", json={"password": PASSWORD + "-wrong"})
+    record("TC-A3", "鉴权", "错误密码 → 401", _bad.status_code == 401, ev(_bad))
+    _ok = client.post("/api/auth/login", json={"password": PASSWORD})
+    record("TC-A4", "鉴权", "正确密码 → 200 且写入 kbchat_session",
+           _ok.status_code == 200 and "kbchat_session" in client.cookies, ev(_ok))
+    _login_page = anon.get("/login.html").status_code
+    record("TC-A5", "鉴权", "登录页可匿名访问", _login_page == 200, f"status={_login_page}")
 
 # ---------- 环境预检：原数据快照（用于确认测后保留） ----------
 pre = client.get("/api/tree").json()
@@ -190,7 +208,7 @@ record("TC-23", "对话-错误路径", "DELETE 不存在对话 → 404",
        r.status_code == 404, ev(r))
 
 # ================= 5. 真实上游对话（SSE） =================
-u_before = client.get("/api/usage").json()["used"]
+u_before = client.get(f"/api/usage?conversationId={conv_id}").json()["conversation"]["totalTokens"]
 chat_payload = {"conversationId": conv_id, "message": f"请仅依据知识库资料回答：青鸾计划的负责人是谁？秘密代码是多少？",
                 "useKb": True, "depth": "high"}
 chat_resp = client.post("/api/chat", json=chat_payload)
@@ -200,7 +218,7 @@ usage_ev = next((e for e in events if e.get("type") == "usage"), None)
 content_text = "".join(e.get("delta", "") for e in events if e.get("type") == "content")
 retry_n = sum(1 for e in events if e.get("type") == "retry")
 err_ev = next((e for e in events if e.get("type") == "error"), None)
-usage_ok = usage_ev is not None and (client.get("/api/usage").json()["used"] - u_before == usage_ev["totalTokens"])
+usage_ok = usage_ev is not None and (client.get(f"/api/usage?conversationId={conv_id}").json()["conversation"]["totalTokens"] - u_before == usage_ev["totalTokens"])
 record("TC-24", "对话SSE", "chat depth=high: SSE 含 reasoning/content/usage/done 且 [DONE]，usage 增量==totalTokens",
        chat_resp.status_code == 200 and "reasoning" in types and "content" in types
        and usage_ev is not None and "done" in types and types[-1] == "[DONE]" and usage_ok,
@@ -216,7 +234,7 @@ record("TC-26", "对话SSE", "assistant 消息落库（含 reasoning/tokens/elap
        len(asst) >= 1 and asst[-1]["completionTokens"] == (usage_ev or {}).get("completionTokens"),
        f"msgs={len(msgs)} asstTokens={asst and (asst[-1]['promptTokens'], asst[-1]['completionTokens'], asst[-1]['elapsedMs'])}")
 
-u_before2 = client.get("/api/usage").json()["used"]
+u_before2 = client.get(f"/api/usage?conversationId={conv_id}").json()["conversation"]["totalTokens"]
 chat_resp2 = client.post("/api/chat", json={"conversationId": conv_id,
                                             "message": f"知识库文件 {FILE_NAME} 中的标记词 {MARKER} 代表什么？一句话回答。",
                                             "useKb": True, "depth": "none"})
@@ -224,7 +242,7 @@ events2, _ = parse_sse(chat_resp2)
 types2 = [e.get("type") for e in events2]
 usage_ev2 = next((e for e in events2 if e.get("type") == "usage"), None)
 content2 = "".join(e.get("delta", "") for e in events2 if e.get("type") == "content")
-usage_ok2 = usage_ev2 is not None and (client.get("/api/usage").json()["used"] - u_before2 == usage_ev2["totalTokens"])
+usage_ok2 = usage_ev2 is not None and (client.get(f"/api/usage?conversationId={conv_id}").json()["conversation"]["totalTokens"] - u_before2 == usage_ev2["totalTokens"])
 record("TC-27", "对话SSE", "chat depth=none: 无 reasoning 事件，有 content/usage/done，usage 增量==totalTokens",
        chat_resp2.status_code == 200 and "reasoning" not in types2 and "content" in types2
        and usage_ev2 is not None and "done" in types2 and usage_ok2,
@@ -240,49 +258,13 @@ record("TC-29", "模型", "GET /api/models 返回 {models:[...]}",
        r.status_code == 200 and isinstance(r.json().get("models"), list) and len(r.json()["models"]) > 0,
        ev(r))
 
-r = client.get("/api/export")
-exp = r.json()
-exp_settings = exp.get("settings", {})
-my_folder = next((f for f in exp["folders"] if f["name"] == FOLDER_NAME + "-R"), None)
-my_file = next((f for f in exp["files"] if f["name"] == FILE_NAME), None)
-my_chunks = [c for c in exp["chunks"] if c["file_id"] == my_file["id"]] if my_file else []
-my_conv = next((c for c in exp["conversations"] if c["title"] == CONV_RENAMED), None)
-record("TC-30", "导出", "GET /api/export 含 version/导出时间/测试实体，settings 不含 api_key",
-       r.status_code == 200 and exp.get("version") == 1 and "exportedAt" in exp
-       and my_folder is not None and my_file is not None and my_conv is not None
-       and "api_key" not in exp_settings and len(my_chunks) == (my_file or {}).get("chunk_count", -1),
-       ev(r, f"chunks={len(my_chunks)} convMessages={len(my_conv.get('messages', [])) if my_conv else 0}"))
-
-# 导入闭环：仅回导测试实体（构造过滤版 JSON，不动真实数据）
-imp_payload = {"version": 1, "exportedAt": exp["exportedAt"],
-               "folders": [my_folder], "files": [my_file], "chunks": my_chunks,
-               "conversations": [my_conv], "settings": {}}
-r = client.post("/api/import", files={"file": (f"qa-import-{RUN}.json",
-                                               json.dumps(imp_payload, ensure_ascii=False).encode("utf-8"),
-                                               "application/json")})
-imp = r.json()
-record("TC-31", "导入", "POST /api/import 回导测试实体，计数与导出一致 (folders=1,files=1,conversations=1)",
-       r.status_code == 200 and imp == {"folders": 1, "files": 1, "conversations": 1},
-       ev(r, f"resp={imp}"))
-
-tree_after = client.get("/api/tree").json()
-copy_folder = next((f for f in tree_after["folders"] if f["name"] == FOLDER_NAME + "-R" and f["id"] != fid), None)
-copy_file = next((f for f in tree_after["files"] if f["name"] == FILE_NAME and f["id"] != file_id), None)
-convs_after = client.get("/api/conversations").json()
-copy_conv = next((c for c in convs_after if c["title"] == CONV_RENAMED and c["id"] != conv_id), None)
-copy_conv_detail = client.get(f"/api/conversations/{copy_conv['id']}").json() if copy_conv else {}
-record("TC-32", "导入闭环", "回导副本可查询：目录/文件副本在 tree，对话副本消息数一致",
-       copy_folder is not None and copy_file is not None and copy_conv is not None
-       and len(copy_conv_detail.get("messages", [])) == len(my_conv["messages"]),
-       f"copyFolderId={copy_folder and copy_folder['id']} copyFileId={copy_file and copy_file['id']} "
-       f"copyConvId={copy_conv and copy_conv['id']} messages={len(copy_conv_detail.get('messages', []))}")
-
-bad = client.post("/api/import", files={"file": ("bad.json", b"not-json", "application/json")})
-record("TC-33", "导入-错误路径", "导入非 JSON → 400",
-       bad.status_code == 400, ev(bad))
-bad2 = client.post("/api/import", files={"file": ("bad2.json", json.dumps({"version": 99}).encode(), "application/json")})
-record("TC-34", "导入-错误路径", "导入不支持版本 → 400",
-       bad2.status_code == 400, ev(bad2))
+r_exp = client.get("/api/export")
+r_imp = client.post("/api/import", files={"file": ("x.json", b"{}", "application/json")})
+record("TC-30", "导入导出（已移除）", "GET /api/export 返回 404，POST /api/import 返回 404/405（接口已移除）",
+       r_exp.status_code == 404 and r_imp.status_code in (404, 405),
+       f"export={r_exp.status_code} import={r_imp.status_code}")
+copy_conv = None
+copy_folder = None
 
 # ================= 7. 前端静态资源 =================
 r = client.get("/")

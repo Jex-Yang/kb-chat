@@ -6,7 +6,7 @@ import { api } from './api.js';
 import { icon } from './icons.js';
 import { toast } from './util.js';
 import { initLayout } from './layout.js';
-import { initTopbar, loadModels, refreshUsage, setDepth } from './topbar.js';
+import { initTopbar, loadModels, refreshUsage, setDepth } from './topbar.js?v=20261030f';
 import { initTree, loadTree } from './tree.js';
 import { initFinder } from './finder.js';
 import { initPreview } from './preview.js';

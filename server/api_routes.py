@@ -416,6 +416,8 @@ def _usage_payload(conversation_id: int | None) -> dict[str, Any]:
     ratio = used / quota if quota > 0 else 0.0
     conv = db.conversation_usage(conversation_id) if conversation_id else {
         "promptTokens": 0, "completionTokens": 0, "totalTokens": 0, "turns": 0}
+    turn = db.last_turn_usage(conversation_id) if conversation_id else {
+        "promptTokens": 0, "completionTokens": 0, "reasoningTokens": 0, "totalTokens": 0}
 
     estimated = 0
     breakdown = {"systemTokens": 0, "textTokens": 0, "imageTokens": 0,
@@ -447,6 +449,7 @@ def _usage_payload(conversation_id: int | None) -> dict[str, Any]:
         "compaction": comp,
         "compactionPolicy": compaction.policy(quota),
         "conversation": conv,
+        "turn": turn,
         "outputTokens": conv["completionTokens"],
         "todayTokens": db.today_usage(),
         "totalTokens": db.total_usage(),

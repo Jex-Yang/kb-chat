@@ -1,6 +1,25 @@
-> 历史报告：部分接口/UI 已迭代（新增全文搜索、消息版本、纯文本导出等），最新说明见 README.md。
+> 本文件顶部为最新一轮结果；下方 2026-10-27 的报告仅作对照，接口/UI 已迭代。
 
 # KBChat 测试报告
+
+## 最新一轮（2026-10-30 · debian:8000 · 带访问密码）
+
+| 项 | 内容 |
+|----|------|
+| 环境 | Debian 13，systemd 单元 `kbchat`，`http://debian.local:8000` |
+| 脚本 | `KBC_BASE=http://debian.local:8000 KBC_PASSWORD=… python qa_test/run_tests.py` |
+| 用例数 | 36（含 5 项鉴权、1 项已移除接口、1 项前端静态资源） |
+| 结果 | **36 PASS / 0 FAIL / 0 BLOCKED，通过率 100%** |
+| 清理校验 | `residue folders/files/convs = [0, 0, 0]`，测试数据无残留 |
+
+补充手工检查（全部通过）：目录移动 / 复制、文件重命名 / 复制 / 移动 / 下载、对话重命名 + 置顶、全文搜索、未知接口返回（`/api/export` 404、`/api/import` 405）。
+
+本轮对脚本的改动：
+
+- 新增鉴权用例 TC-A1~A5（未登录 401、错误密码、登录成功、登录页匿名可访问）；
+- `/api/usage` 断言改为带 `?conversationId=` 并比较 `conversation.totalTokens`（原断言误用 `used`）；
+- 导入导出段改为“接口已移除”检查（TC-30）。
+
 
 > 测试人：查无漏（QA）· 测试时间：2026-10-27 · 服务：http://127.0.0.1:8321（uvicorn，启动日志：索引加载 9 分块/132 term）
 > 测试脚本：`qa_test/run_tests.py`（35 用例主套件）、`qa_test/chat_retry.py`（真实上游专项，含 429 退避重试）

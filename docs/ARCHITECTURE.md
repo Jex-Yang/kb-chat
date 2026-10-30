@@ -1,5 +1,18 @@
 # KBChat 架构文档（契约冻结版）
 
+## 0. 当前版本补充（2026-10-30）
+
+> §1–§7 为对外契约冻结版；以下是之后的迭代，冲突以本节为准。
+
+- **访问密码**：`server/auth.py`（PBKDF2 哈希 + 内存会话 + 每 IP 失败限速）、`server/auth_routes.py`（`/api/auth/status|login|logout`）。`server/main.py` 的 `require_login` 中间件在开启鉴权时拦截除登录页与登录接口外的所有请求：页面回登录页、`/api/*` 返回 401、其余静态资源 302。Cookie `kbchat_session`（HttpOnly、SameSite=Strict、7 天滑动续期，存在进程内存）。
+- **并发**：`server/db.py` 改为每线程一条 SQLite 连接（WAL），修复 FastAPI 线程池共享单连接时的 `sqlite3.InterfaceError: bad parameter or other API misuse`；写操作仍由 `_lock` 串行。
+- **静态缓存**：`NoCacheStatic` 对 `.js/.css/.html` 返回 `Cache-Control: no-store`，入口脚本带 `?v=` 版本号；`/` 保持 `no-cache`。
+- **用量口径**：`GET /api/usage` 的 `conversation` 增加 `reasoningTokens`（≈ completion − 正文 tokens）；新增顶层 `turn`（最近一轮 `promptTokens / completionTokens / reasoningTokens / totalTokens`）。前端弹层：进度条 = `estimated / quota`（按上限填充、未用留空），构成行展示系统提示词 / 上传文本 / 图片 / 对话消息，累计区展示输入、输出（含思考）。
+- **自动压缩**：阈值仍为窗口 80%（`compaction.threshold_tokens`），每轮请求前检查；只压缩对话消息，不压缩附件正文。
+- **已移除**：`/api/export`、`/api/import`（`GET /api/export` → 404，`POST /api/import` → 405）。
+- **测试**：`qa_test/run_tests.py` 支持 `KBC_BASE` / `KBC_PASSWORD`，可在带访问密码的实例上执行；2026-10-30 全量回归 36/36 PASS。
+
+
 > 本文档是前后端唯一契约源。契约字段一旦实现不得私自变更，变更必须经主理人中转。
 
 ## 1. 技术选型（已拍板）

@@ -24,6 +24,16 @@ logger = logging.getLogger("kbchat")
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 LOGIN_PAGE = WEB_DIR / "login.html"
 
+
+class NoCacheStatic(StaticFiles):
+    """零构建前端：HTML/JS/CSS 每次都协商缓存，避免部署后仍跑旧模块。"""
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if path.endswith((".js", ".css", ".html")):
+            response.headers["cache-control"] = "no-store"
+        return response
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     db.init()
@@ -77,6 +87,6 @@ def index():
 
 # 静态托管 web/（html=True 使 GET / 返回 index.html）；必须在 API 路由之后挂载
 if WEB_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
+    app.mount("/", NoCacheStatic(directory=str(WEB_DIR), html=True), name="web")
 else:
     logger.warning("web/ 目录不存在，静态页面未挂载")

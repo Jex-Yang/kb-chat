@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#151617">
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <title>KBChat · 企业知识库助手</title>
-  <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./style.css?v=20261030f">
   <script src="./vendor/marked.min.js"></script>
 </head>
 <body>
@@ -148,22 +148,19 @@
             <span id="status-ring-pct">0%</span>
           </button>
         </div>
-        <div id="usage-pop" class="popover from-status" role="dialog" aria-label="上下文用量" hidden>
-          <div class="pop-head up-head">
-            <span>上下文已用 <b id="up-context-pct">0%</b></span>
+        <div id="usage-pop" class="popover from-status" role="dialog" aria-label="窗口用量" hidden>
+          <div class="pop-head up-head" title="下一轮请求要发的 prompt（系统提示词 + 消息正文），压缩后会变小；不含思考内容">
+            <span>上下文占用 <b id="up-context-pct">0%</b></span>
             <b class="up-total" id="up-context">~0 / 1M</b>
           </div>
-          <div class="up-bar up-stack" id="up-bar">
-            <span class="up-seg up-seg-system" id="up-seg-system"></span>
-            <span class="up-seg up-seg-text" id="up-seg-text"></span>
-            <span class="up-seg up-seg-image" id="up-seg-image"></span>
-            <span class="up-seg up-seg-msg" id="up-seg-msg"></span>
+          <div class="up-bar" id="up-bar">
+            <span class="up-seg up-fill" id="up-fill"></span>
           </div>
           <div class="up-items">
-            <div class="up-item" title="system prompt；知识库模式含检索到的参考资料"><i class="up-dot dot-system"></i><span>系统提示词</span><b id="up-system">~0</b></div>
-            <div class="up-item" title="上传的文本附件全文占用的提示词 token（已注入上下文的部分）"><i class="up-dot dot-text"></i><span>上传文本占用</span><b id="up-text">~0</b></div>
-            <div class="up-item" id="up-image-row" title="当前用户消息中的图片，按尺寸估算视觉 token" hidden><i class="up-dot dot-image"></i><span>图片</span><b id="up-image">~0</b></div>
-            <div class="up-item" title="用户输入文字、助手回复、压缩摘要（模型实际看到的历史）"><i class="up-dot dot-msg"></i><span>对话消息</span><b id="up-msg">~0</b></div>
+            <div class="up-item" title="系统提示词；知识库模式含检索到的参考资料"><i class="up-dot dot-system"></i><span>系统提示词</span><b id="up-system">~0</b></div>
+            <div class="up-item" title="上传的文本附件全文占用的提示词 token"><i class="up-dot dot-text"></i><span>上传文本占用</span><b id="up-text">~0</b></div>
+            <div class="up-item" id="up-image-row" title="当前用户消息中的图片，按尺寸估算" hidden><i class="up-dot dot-image"></i><span>图片</span><b id="up-image">~0</b></div>
+            <div class="up-item" title="用户输入、助手回答正文、压缩摘要（模型实际看到的历史）"><i class="up-dot dot-msg"></i><span>对话消息</span><b id="up-msg">~0</b></div>
           </div>
           <div class="up-sep"></div>
           <div class="up-compact-row">
@@ -172,10 +169,10 @@
           </div>
           <div class="up-compact-info" id="up-compact-info" hidden></div>
           <div class="up-sep"></div>
-          <div class="up-row"><span>本会话累计</span><b id="up-conv">0 tokens</b></div>
+          <div class="up-row" title="本会话所有轮次累加，包含思考内容"><span>本会话累计（含思考）</span><b id="up-conv">0 tokens</b></div>
           <div class="up-grid">
             <div><span>输入</span><b id="up-prompt">0</b></div>
-            <div><span>输出</span><b id="up-completion">0</b></div>
+            <div title="上游返回的 completion_tokens，包含思考内容"><span>输出</span><b id="up-completion">0</b><small class="up-sub" id="up-reasoning" hidden>其中思考 ~0</small></div>
           </div>
           <div class="up-sep"></div>
           <div class="up-row"><span>缓存命中</span><b id="up-cache-rate">—</b></div>
@@ -186,7 +183,7 @@
           <div class="up-sep"></div>
           <div class="up-note-line">
             <span class="mini-badge" id="up-precision">—</span>
-            <p class="up-note" id="up-note">上传文本占用 = 上传的文本附件全文 token；图片按尺寸估算视觉 token。下方输入/输出为本会话逐轮累加。</p>
+            <p class="up-note" id="up-note">上下文 = 下一轮要发的 prompt，压缩后自动变小；思考不进上下文，只计入本会话累计。</p>
           </div>
         </div>
 
@@ -436,6 +433,6 @@
   <input type="file" id="chat-folder-input" webkitdirectory multiple hidden>
   <input type="file" id="edit-attach-input" multiple hidden accept=".txt,.md,.csv,.pdf,.docx,.xlsx,image/*">
 
-  <script type="module" src="./app.js"></script>
+  <script type="module" src="./app.js?v=20261030f"></script>
 </body>
 </html>

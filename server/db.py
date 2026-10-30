@@ -18,6 +18,8 @@ from . import config, tokens
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "kb.db"
 
 _conn: sqlite3.Connection | None = None
+_db_path: Path | None = None
+_local = threading.local()
 _lock = threading.Lock()
 
 DDL = """
@@ -125,20 +127,27 @@ def today() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
+def _configure(c: sqlite3.Connection) -> sqlite3.Connection:
+    """每条连接都要单独设置的 PRAGMA（缓存取小值，避免线程多时内存叠加）。"""
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA synchronous=NORMAL")
+    c.execute("PRAGMA busy_timeout=5000")
+    c.execute("PRAGMA cache_size=-4000")
+    c.execute("PRAGMA temp_store=MEMORY")
+    c.execute("PRAGMA foreign_keys=ON")
+    return c
+
+
 def init(db_path: Path = DB_PATH) -> None:
     """建表 + 开启 WAL / 外键 + 轻量迁移。幂等。"""
-    global _conn
+    global _conn, _db_path
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    if _conn is not None:
+    if _db_path is not None:
         return
-    _conn = sqlite3.connect(str(db_path), check_same_thread=False)
-    _conn.row_factory = sqlite3.Row
-    _conn.execute("PRAGMA journal_mode=WAL")
-    _conn.execute("PRAGMA synchronous=NORMAL")
-    _conn.execute("PRAGMA busy_timeout=5000")
-    _conn.execute("PRAGMA cache_size=-20000")
-    _conn.execute("PRAGMA temp_store=MEMORY")
-    _conn.execute("PRAGMA foreign_keys=ON")
+    _db_path = db_path
+    _conn = _configure(sqlite3.connect(str(db_path), check_same_thread=False))
+    _local.conn = _conn
     _conn.executescript(DDL)
     _migrate(_conn)
     _backfill_file_tokens(_conn)
@@ -484,9 +493,19 @@ def _backfill_file_tokens(c: sqlite3.Connection) -> None:
 
 
 def conn() -> sqlite3.Connection:
-    if _conn is None:
-        init()
-    return _conn  # type: ignore[return-value]
+    """每个线程一条连接。
+
+    FastAPI 的同步端点跑在线程池里，所有请求共用一条 sqlite3 连接会偶发
+    `sqlite3.InterfaceError: bad parameter or other API misuse`；WAL 下每线程
+    一条连接即可安全并发读，写仍由 _lock 串行化。
+    """
+    c = getattr(_local, "conn", None)
+    if c is None:
+        if _db_path is None:
+            init()
+        c = _configure(sqlite3.connect(str(_db_path), check_same_thread=False, timeout=5))
+        _local.conn = c
+    return c
 
 
 def _exec(sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
@@ -986,18 +1005,39 @@ def conversation_usage(conv_id: int) -> dict[str, Any]:
         "COALESCE(SUM(CASE WHEN role='assistant' AND (COALESCE(prompt_tokens,0)+COALESCE(completion_tokens,0))>0 THEN 1 ELSE 0 END),0) AS turns, "
         "COALESCE(SUM(CASE WHEN cache_hit_tokens IS NOT NULL THEN cache_hit_tokens ELSE 0 END),0) AS hit, "
         "COALESCE(SUM(CASE WHEN cache_miss_tokens IS NOT NULL THEN cache_miss_tokens ELSE 0 END),0) AS miss, "
-        "COALESCE(SUM(CASE WHEN cache_hit_tokens IS NOT NULL THEN 1 ELSE 0 END),0) AS cache_known "
+        "COALESCE(SUM(CASE WHEN cache_hit_tokens IS NOT NULL THEN 1 ELSE 0 END),0) AS cache_known, "
+        # 思考 token ≈ 上游 completion − 正文 content_tokens（上游把 reasoning 计入 completion）
+        "COALESCE(SUM(CASE WHEN role='assistant' THEN MAX(COALESCE(completion_tokens,0)"
+        " - COALESCE(content_tokens,0), 0) ELSE 0 END),0) AS reasoning "
         "FROM messages WHERE conv_id=?", (conv_id,)).fetchone()
     prompt = int(row["p"] or 0)
     completion = int(row["c"] or 0)
+    reasoning = min(int(row["reasoning"] or 0), completion)
     hit = int(row["hit"] or 0)
     miss = int(row["miss"] or 0)
     known = int(row["cache_known"] or 0) > 0
     rate = (hit / (hit + miss)) if known and (hit + miss) > 0 else None
     return {"promptTokens": prompt, "completionTokens": completion,
+            "reasoningTokens": reasoning,
             "totalTokens": prompt + completion, "turns": int(row["turns"] or 0),
             "cacheHitTokens": hit, "cacheMissTokens": miss,
             "cacheHitRate": rate, "cacheKnown": known}
+
+
+def last_turn_usage(conv_id: int) -> dict[str, Any]:
+    """最近一轮的真实窗口占用：上游 prompt + completion（含思考）。"""
+    row = conn().execute(
+        "SELECT prompt_tokens, completion_tokens, content_tokens FROM messages "
+        "WHERE conv_id=? AND role='assistant' AND COALESCE(completion_tokens,0)>0 "
+        "ORDER BY id DESC LIMIT 1", (conv_id,)).fetchone()
+    if row is None:
+        return {"promptTokens": 0, "completionTokens": 0,
+                "reasoningTokens": 0, "totalTokens": 0}
+    prompt = int(row["prompt_tokens"] or 0)
+    completion = int(row["completion_tokens"] or 0)
+    reasoning = min(max(completion - int(row["content_tokens"] or 0), 0), completion)
+    return {"promptTokens": prompt, "completionTokens": completion,
+            "reasoningTokens": reasoning, "totalTokens": prompt + completion}
 
 
 def total_usage() -> int:
